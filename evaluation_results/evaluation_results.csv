@@ -1,0 +1,9 @@
+problem_name,planner_name,solved,time_sec,plan_cost,expansions,nodes_expanded,search_depth,error_reason,efficiency,speed
+problem_small_00.pddl,FD ASTAR LM-Cut,True,0.035358428955078125,4,5,0,0,,0.8,141.40899773438343
+problem_small_00.pddl,FD ASTAR DFP (Stateless),True,0.5132992267608643,4,5,0,0,,0.8,9.740906939509962
+problem_small_00.pddl,FD ASTAR SCC-DFP,True,0.47060060501098633,4,5,0,0,,0.8,10.62472072232732
+problem_small_00.pddl,FD ASTAR Bisimulation,True,0.5208141803741455,4,5,0,0,,0.8,9.600353040326343
+problem_small_00.pddl,FD ASTAR Blind,True,0.03148603439331055,4,19,0,0,,0.21052631578947367,603.4421408126486
+problem_small_00.pddl,FD ASTAR Add Heuristic,True,0.02745652198791504,4,5,0,0,,0.8,182.1060949453374
+problem_small_00.pddl,FD ASTAR Max Heuristic,False,0.027316570281982422,0,0,0,0,no_solution,inf,0.0
+problem_small_00.pddl,GNN,True,2.5274031162261963,4,5,5,0,,0.8,1.9783151994628279

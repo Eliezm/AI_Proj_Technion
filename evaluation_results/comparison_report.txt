@@ -1,0 +1,118 @@
+==========================================================================================
+COMPREHENSIVE EVALUATION REPORT
+==========================================================================================
+
+Timestamp: 2025-10-22T23:15:33.838453
+Total problems: 1
+Total evaluations: 8
+
+SUMMARY TABLE
+------------------------------------------------------------------------------------------
+Planner                             Solved          Avg Time (s)    Avg Exp.       
+------------------------------------------------------------------------------------------
+FD ASTAR LM-Cut                     1/1 (100%)      0.04            5              
+FD ASTAR DFP (Stateless)            1/1 (100%)      0.51            5              
+FD ASTAR SCC-DFP                    1/1 (100%)      0.47            5              
+FD ASTAR Bisimulation               1/1 (100%)      0.52            5              
+FD ASTAR Blind                      1/1 (100%)      0.03            19             
+FD ASTAR Add Heuristic              1/1 (100%)      0.03            5              
+FD ASTAR Max Heuristic              0/1 (0%)        0.00            0              
+GNN                                 1/1 (100%)      2.53            5              
+------------------------------------------------------------------------------------------
+
+
+FD ASTAR LM-Cut DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         100.0%
+  Avg Time (solved):  0.04s
+  Median Time:        0.04s
+  Avg Expansions:     5
+  Median Expansions:  5
+  Avg Plan Cost:      4
+  Total Time:         0.0s
+  Avg Efficiency:     0.8000
+  Avg Speed:          141.41 exp/s
+
+FD ASTAR DFP (Stateless) DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         100.0%
+  Avg Time (solved):  0.51s
+  Median Time:        0.51s
+  Avg Expansions:     5
+  Median Expansions:  5
+  Avg Plan Cost:      4
+  Total Time:         0.5s
+  Avg Efficiency:     0.8000
+  Avg Speed:          9.74 exp/s
+
+FD ASTAR SCC-DFP DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         100.0%
+  Avg Time (solved):  0.47s
+  Median Time:        0.47s
+  Avg Expansions:     5
+  Median Expansions:  5
+  Avg Plan Cost:      4
+  Total Time:         0.5s
+  Avg Efficiency:     0.8000
+  Avg Speed:          10.62 exp/s
+
+FD ASTAR Bisimulation DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         100.0%
+  Avg Time (solved):  0.52s
+  Median Time:        0.52s
+  Avg Expansions:     5
+  Median Expansions:  5
+  Avg Plan Cost:      4
+  Total Time:         0.5s
+  Avg Efficiency:     0.8000
+  Avg Speed:          9.60 exp/s
+
+FD ASTAR Blind DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         100.0%
+  Avg Time (solved):  0.03s
+  Median Time:        0.03s
+  Avg Expansions:     19
+  Median Expansions:  19
+  Avg Plan Cost:      4
+  Total Time:         0.0s
+  Avg Efficiency:     0.2105
+  Avg Speed:          603.44 exp/s
+
+FD ASTAR Add Heuristic DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         100.0%
+  Avg Time (solved):  0.03s
+  Median Time:        0.03s
+  Avg Expansions:     5
+  Median Expansions:  5
+  Avg Plan Cost:      4
+  Total Time:         0.0s
+  Avg Efficiency:     0.8000
+  Avg Speed:          182.11 exp/s
+
+FD ASTAR Max Heuristic DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         0.0%
+  Avg Time (solved):  0.00s
+  Median Time:        0.00s
+  Avg Expansions:     0
+  Median Expansions:  0
+  Avg Plan Cost:      0
+  Total Time:         0.0s
+  Avg Efficiency:     inf
+  Avg Speed:          0.00 exp/s
+
+GNN DETAILED STATISTICS
+--------------------------------------------------
+  Solve Rate:         100.0%
+  Avg Time (solved):  2.53s
+  Median Time:        2.53s
+  Avg Expansions:     5
+  Median Expansions:  5
+  Avg Plan Cost:      4
+  Total Time:         2.5s
+  Avg Efficiency:     0.8000
+  Avg Speed:          1.98 exp/s

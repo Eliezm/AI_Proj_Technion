@@ -1,0 +1,8 @@
+name,set_size,solved,solve_rate_%,avg_time_on_solved_s,avg_expansions_on_solved,avg_cost_on_solved,errors
+FD ASTAR LM-Cut,1,1,100.0,0.04207301139831543,5,4,None
+FD ASTAR DFP (Stateless),1,1,100.0,0.6934986114501953,5,4,None
+FD ASTAR SCC-DFP,1,1,100.0,0.7371182441711426,5,4,None
+FD ASTAR Bisimulation,1,1,100.0,0.5521132946014404,5,4,None
+FD ASTAR Blind,1,1,100.0,0.03024911880493164,19,4,None
+FD ASTAR Add Heuristic,1,1,100.0,0.03420686721801758,5,4,None
+FD ASTAR Max Heuristic,1,0,0.0,0,0,0,no_solution
