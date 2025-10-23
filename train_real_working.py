@@ -121,7 +121,7 @@ def load_benchmarks_from_folders() -> Dict[str, List[Tuple[str, str]]]:
 
     logger.info(f"Benchmarks directory: {benchmarks_dir}\n")
 
-    difficulties = ["small", "medium", "hard"]
+    difficulties = ["small", "medium", "large"]
     all_benchmarks = {}
 
     for difficulty in difficulties:
