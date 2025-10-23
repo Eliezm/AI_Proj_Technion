@@ -1,0 +1,136 @@
+Warning! SIGXCPU is not available on your platform. This means that the planner cannot be gracefully terminated when using a time limit, which, however, is probably supported on your platform anyway.
+Parsing...
+Parsing: [0.000s CPU, 0.006s wall-clock]
+Normalizing task... [0.000s CPU, 0.000s wall-clock]
+Instantiating...
+Generating Datalog program... [0.000s CPU, 0.000s wall-clock]
+Normalizing Datalog program...
+Normalizing Datalog program: [0.016s CPU, 0.005s wall-clock]
+Preparing model... [0.000s CPU, 0.002s wall-clock]
+Generated 21 rules.
+Computing model... [0.000s CPU, 0.002s wall-clock]
+82 relevant atoms
+52 auxiliary atoms
+134 final queue length
+210 total queue pushes
+Completing instantiation... [0.000s CPU, 0.004s wall-clock]
+Instantiating: [0.016s CPU, 0.013s wall-clock]
+Computing fact groups...
+Finding invariants...
+10 initial candidates
+Finding invariants: [0.016s CPU, 0.005s wall-clock]
+Checking invariant weight... [0.000s CPU, 0.000s wall-clock]
+Instantiating groups... [0.000s CPU, 0.000s wall-clock]
+Collecting mutex groups... [0.000s CPU, 0.000s wall-clock]
+Choosing groups...
+5 uncovered facts
+Choosing groups: [0.000s CPU, 0.001s wall-clock]
+Building translation key... [0.000s CPU, 0.000s wall-clock]
+Computing fact groups: [0.016s CPU, 0.007s wall-clock]
+Building STRIPS to SAS dictionary... [0.000s CPU, 0.000s wall-clock]
+Building dictionary for full mutex groups... [0.000s CPU, 0.000s wall-clock]
+Building mutex information...
+Building mutex information: [0.000s CPU, 0.000s wall-clock]
+Translating task...
+Processing axioms...
+Simplifying axioms... [0.000s CPU, 0.000s wall-clock]
+Translator axioms removed by simplifying: 0
+Processing axioms: [0.000s CPU, 0.001s wall-clock]
+Translating task: [0.000s CPU, 0.004s wall-clock]
+44 effect conditions simplified
+0 implied preconditions added
+Detecting unreachable propositions...
+0 operators removed
+0 axioms removed
+8 propositions removed
+Detecting unreachable propositions: [0.000s CPU, 0.002s wall-clock]
+Reordering and filtering variables...
+9 of 9 variables necessary.
+5 of 9 mutex groups necessary.
+32 of 32 operators necessary.
+0 of 0 axiom rules necessary.
+Reordering and filtering variables: [0.000s CPU, 0.001s wall-clock]
+Translator variables: 9
+Translator derived variables: 0
+Translator facts: 30
+Translator goal facts: 4
+Translator mutex groups: 5
+Translator total mutex groups size: 25
+Translator operators: 32
+Translator axioms: 0
+Translator task size: 296
+warning: could not determine peak memory
+Writing output... [0.016s CPU, 0.003s wall-clock]
+Done! [0.047s CPU, 0.039s wall-clock]
+[t=0.000524s, 804 KB] reading input...
+[t=0.001787s, 832 KB] done reading input!
+[t=0.001827s, 832 KB] building causal graph...done! [t=0.000186s]
+[t=0.011536s, 1240 KB] Initializing merge-and-shrink heuristic...
+[t=0.011601s, 1240 KB] Running merge-and-shrink algorithm...
+[t=0.011626s, 1240 KB] Merge strategy options:
+[t=0.011643s, 1240 KB] Type: merge_gnn
+
+[t=0.011667s, 1240 KB] Options related to size limits and shrinking: 
+[t=0.011682s, 1240 KB] Transition system size limit: 4000
+[t=0.011698s, 1240 KB] Transition system size limit right before merge: 4000
+[t=0.011712s, 1240 KB] Threshold to trigger shrinking right before merge: 1
+
+[t=0.011758s, 1240 KB] Shrink strategy options: 
+[t=0.011774s, 1240 KB] Type: bisimulation
+[t=0.011789s, 1240 KB] Bisimulation type: exact
+[t=0.011803s, 1240 KB] At limit: return
+
+[t=0.011826s, 1240 KB] Pruning unreachable states: yes
+[t=0.011841s, 1240 KB] Pruning irrelevant states: yes
+
+[t=0.011862s, 1240 KB] Label reduction options:
+[t=0.011877s, 1240 KB] Before merging: disabled
+[t=0.011891s, 1240 KB] Before shrinking: enabled
+[t=0.011905s, 1240 KB] Method: all transition systems with fixpoint computation
+[t=0.011919s, 1240 KB] System order: random
+
+[t=0.011941s, 1240 KB] Main loop max time in seconds: inf
+
+
+[t=0.011994s, 1240 KB] Building atomic transition systems... 
+[t=0.012273s, 1240 KB] M&S algorithm timer: 0.000689s (after computation of atomic factors)
+
+[t=0.020279s, 1836 KB] Starting main loop without a time limit.
+
+[GNN::INIT] MergeStrategyGNN initialized
+
+[M&S] Using fd_output: C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward\fd_output
+[GNN::PATH] Current working directory: C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward
+[GNN::PATH] Detected cwd is downward/, adjusting to parent
+[GNN::PATH] ✅ Found project root: C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems
+
+[GNN::ITERATION 0] ========================================
+[GNN::ITERATION 0] Waiting for GNN merge decision...
+[GNN::ITERATION 0] Input file:  C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward\gnn_output\merge_0.json
+[GNN::ITERATION 0] ACK file:    C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward\fd_output\gnn_ack_0.json
+[GNN::ITERATION 0] ✅ Merge decision file found!
+[GNN::ITERATION 0] ✅ Successfully parsed merge decision JSON
+[GNN::ITERATION 0] Merge decision: (2, 6)
+[GNN::ITERATION 0] ✅ Wrote ACK to: C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward\fd_output\gnn_ack_0.json
+[GNN::ITERATION 0] ✅ Returning merge pair (2, 6)
+[GNN::ITERATION 0] ========================================
+
+[t=0.618418s, 1836 KB] Next pair of indices: (2, 6)
+[t=0.618464s, 1836 KB] M&S algorithm main loop timer: 0.598200s (after computation of next merge)
+[M&S] ✅ Wrote merge_before_0.json
+[M&S] ✅ Wrote merge_after_0.json
+[M&S] ✅ Wrote ts_0.json with 10 states
+[t=0.629626s, 1836 KB] M&S algorithm main loop timer: 0.609382s (after merging)
+
+[GNN::PATH] Current working directory: C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward
+[GNN::PATH] Detected cwd is downward/, adjusting to parent
+[GNN::PATH] ✅ Found project root: C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems
+
+[GNN::ITERATION 1] ========================================
+[GNN::ITERATION 1] Waiting for GNN merge decision...
+[GNN::ITERATION 1] Input file:  C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward\gnn_output\merge_1.json
+[GNN::ITERATION 1] ACK file:    C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward\fd_output\gnn_ack_1.json
+[GNN::ITERATION 1] ✅ Merge decision file found!
+[GNN::ERROR] Failed to read/parse merge decision: Cannot open merge decision file: C:\Users\eliez\Desktop\Studies\Fall 2025\0960208 - AI Autonomous\AIandAutonomousSystems\downward\gnn_output\merge_1.json
+Peak memory: 1836 KB
+caught signal 22 -- exiting
