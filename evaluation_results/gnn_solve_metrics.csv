@@ -1,2 +1,0 @@
-problem_name,planner_name,solved,time_sec,plan_cost,expansions,nodes_expanded,search_depth,error_reason,efficiency,speed,merge_iterations,final_abstraction_size,avg_f_stability,total_reward
-problem_small_00.pddl,GNN-M&S,Yes,2.58,4,5,1816,5,None,703.04,1.94,8,0,0.0000,4.0583

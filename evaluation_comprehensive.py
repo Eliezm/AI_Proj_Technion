@@ -1,37 +1,16 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-COMPREHENSIVE EVALUATION FRAMEWORK
-===================================
-Unified evaluation harness that runs both baselines and trained GNN policy
-on the same benchmark set, with detailed comparison metrics.
-
-Features:
-  ✓ Baseline planner evaluation (FD with various search configs)
-  ✓ Trained GNN policy evaluation (using MergeEnv with real FD)
-  ✓ Side-by-side comparison with statistical analysis
-  ✓ CSV and JSON output formats
-  ✓ Performance visualizations
-  ✓ Detailed logging and diagnostics
-
-Usage:
-    python evaluation_comprehensive.py \
-        --model mvp_output/gnn_model.zip \
-        --domain domain.pddl \
-        --problems "problem_small_*.pddl" \
-        --timeout 300 \
-        --output results/
-
-Output:
-    results/
-    ├── evaluation_results.csv
-    ├── evaluation_summary.json
-    ├── comparison_report.txt
-    └── plots/
-        ├── solve_rate_comparison.png
-        ├── time_comparison.png
-        ├── expansions_comparison.png
-        └── efficiency_frontier.png
+COMPREHENSIVE EVALUATION FRAMEWORK - ENHANCED
+==============================================
+Complete rewrite with:
+  ✓ Robust baseline runner with all major FD planners
+  ✓ GNN policy runner using MergeEnv with real FD
+  ✓ Detailed metric extraction (20+ metrics per run)
+  ✓ Statistical analysis (mean, median, std, IQR)
+  ✓ Multiple output formats (CSV, JSON, TXT)
+  ✓ Per-problem and aggregate reporting
+  ✓ Error tracking and diagnostics
 """
 
 import sys
@@ -50,15 +29,14 @@ import traceback
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
+from collections import defaultdict
 
-# Setup paths
 sys.path.insert(0, os.getcwd())
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)-8s - [%(filename)s] - %(message)s',
+    format='%(asctime)s - %(levelname)-8s - [%(filename)s:%(lineno)d] - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler("evaluation_comprehensive.log", encoding='utf-8'),
@@ -69,32 +47,140 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# CONFIGURATION: BASELINE SETTINGS
+# DATA STRUCTURES - COMPREHENSIVE METRICS
 # ============================================================================
 
-class BenchmarkConfig:
-    """Central configuration for all benchmark settings."""
+@dataclass
+class DetailedMetrics:
+    """Complete set of metrics for a single run."""
+    problem_name: str
+    planner_name: str
 
-    # Time limits
-    TIME_LIMIT_PER_RUN_S = 300  # 5 minutes per problem per planner
+    # Solve status
+    solved: bool
+    wall_clock_time: float
 
-    # ✅ FIXED: Use absolute path to downward directory
-    DOWNWARD_DIR = os.path.abspath("downward")
-    FD_TRANSLATE_BIN = os.path.join(DOWNWARD_DIR, "builds/release/bin/translate/translate.py")
-    FD_DOWNWARD_BIN = os.path.join(DOWNWARD_DIR, "builds/release/bin/downward.exe")
+    # Planning quality
+    plan_cost: int = 0
+    plan_length: int = 0
 
-    # Working directories
-    FD_TEMP_DIR = "evaluation_temp"  # Temporary SAS files
+    # Search metrics
+    nodes_expanded: int = 0
+    nodes_generated: int = 0
+    search_depth: int = 0
+    branching_factor: float = 1.0
 
-    # ✅ CORRECT BASELINE CONFIGURATIONS
+    # Memory metrics (if available)
+    peak_memory_kb: int = 0
+
+    # Time breakdown
+    search_time: float = 0.0
+    translate_time: float = 0.0
+    preprocess_time: float = 0.0
+
+    # Solution quality
+    solution_length: int = 0
+    plan_optimality: float = 1.0  # 1.0 if optimal
+
+    # Heuristic quality (if evaluator)
+    initial_heuristic: int = 0
+    average_heuristic: float = 0.0
+
+    # Error info
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+    # GNN-specific
+    gnn_decisions: int = 0  # Number of merge decisions made
+    merge_episodes: int = 0
+
+    def efficiency_score(self) -> float:
+        """Score: lower is better. 0 is best."""
+        if not self.solved:
+            return float('inf')
+
+        # Normalize by problem size (approximated by plan cost)
+        if self.nodes_expanded > 0 and self.plan_cost > 0:
+            return (self.nodes_expanded / (self.plan_cost * 100.0)) + (self.wall_clock_time / 10.0)
+        return self.wall_clock_time
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for CSV/JSON."""
+        d = asdict(self)
+        d['efficiency_score'] = self.efficiency_score()
+        return d
+
+
+@dataclass
+class AggregateStatistics:
+    """Summary statistics across all problems."""
+    planner_name: str
+    num_problems_total: int
+    num_problems_solved: int
+    solve_rate_pct: float
+
+    # Time stats (solved only)
+    mean_time_sec: float
+    median_time_sec: float
+    std_time_sec: float
+    min_time_sec: float
+    max_time_sec: float
+    q1_time_sec: float  # 25th percentile
+    q3_time_sec: float  # 75th percentile
+
+    # Expansions stats
+    mean_expansions: int
+    median_expansions: int
+    std_expansions: int
+
+    # Plan quality stats
+    mean_plan_cost: int
+    median_plan_cost: int
+    std_plan_cost: int
+
+    # Efficiency
+    mean_efficiency_score: float
+
+    # Coverage metrics
+    unsolved_count: int
+    error_count: int
+    timeout_count: int
+
+    # Aggregate times
+    total_wall_clock_time_sec: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# ============================================================================
+# BASELINE RUNNER - COMPLETE REFACTORING
+# ============================================================================
+
+class BaselineRunner:
+    """Enhanced baseline runner with comprehensive metrics extraction."""
+
+    # Baseline configurations with ALL important FD variants
     BASELINES = [
         {
-            "name": "FD ASTAR LM-Cut",
-            "search_config": "astar(lmcut())"
+            "name": "FD_LM-Cut",
+            "search": "astar(lmcut())"
         },
         {
-            "name": "FD ASTAR DFP (Stateless)",
-            "search_config": (
+            "name": "FD_Blind",
+            "search": "astar(blind())"
+        },
+        {
+            "name": "FD_Add",
+            "search": "astar(add())"
+        },
+        {
+            "name": "FD_Max",
+            "search": "astar(max())"
+        },
+        {
+            "name": "FD_M&S_DFP",
+            "search": (
                 "astar(merge_and_shrink("
                 "merge_strategy=merge_stateless("
                 "merge_selector=score_based_filtering("
@@ -105,8 +191,8 @@ class BenchmarkConfig:
             )
         },
         {
-            "name": "FD ASTAR SCC-DFP",
-            "search_config": (
+            "name": "FD_M&S_SCC",
+            "search": (
                 "astar(merge_and_shrink("
                 "merge_strategy=merge_sccs("
                 "order_of_sccs=topological,"
@@ -117,310 +203,194 @@ class BenchmarkConfig:
                 "max_states=50000,threshold_before_merge=1))"
             )
         },
-        {
-            "name": "FD ASTAR Bisimulation",
-            "search_config": (
-                "astar(merge_and_shrink("
-                "merge_strategy=merge_stateless("
-                "merge_selector=score_based_filtering("
-                "scoring_functions=[total_order()])),"
-                "shrink_strategy=shrink_bisimulation(greedy=false,at_limit=return),"
-                "label_reduction=exact(before_shrinking=true,before_merging=false),"
-                "max_states=50000,threshold_before_merge=1))"
-            )
-        },
-        {
-            "name": "FD ASTAR Blind",
-            "search_config": "astar(blind())"
-        },
-        {
-            "name": "FD ASTAR Add Heuristic",
-            "search_config": "astar(add())"
-        },
-        {
-            "name": "FD ASTAR Max Heuristic",
-            "search_config": "astar(max())"
-        },
     ]
-
-
-# ============================================================================
-# DATA STRUCTURES
-# ============================================================================
-
-@dataclass
-class ProblemResult:
-    """Results for a single problem-planner combination."""
-    problem_name: str
-    planner_name: str
-    solved: bool
-    time_sec: float
-    plan_cost: int = 0
-    expansions: int = 0
-    nodes_expanded: int = 0
-    search_depth: int = 0
-    error_reason: Optional[str] = None
-
-    @property
-    def efficiency(self) -> float:
-        """Compute efficiency metric: plan_cost / expansions (lower is better)."""
-        if not self.solved or self.expansions == 0:
-            return float('inf')
-        return self.plan_cost / self.expansions
-
-    @property
-    def speed(self) -> float:
-        """Compute speed metric: expansions / time (higher is better)."""
-        if self.time_sec == 0:
-            return 0.0
-        return self.expansions / self.time_sec
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for CSV/JSON export."""
-        d = asdict(self)
-        d['efficiency'] = self.efficiency
-        d['speed'] = self.speed
-        return d
-
-
-@dataclass
-class BenchmarkSummary:
-    """Aggregate statistics for a benchmark set."""
-    planner_name: str
-    num_problems: int
-    num_solved: int
-    solve_rate_pct: float
-    avg_time_sec: float
-    median_time_sec: float
-    avg_expansions: int
-    median_expansions: int
-    avg_plan_cost: int
-    median_plan_cost: int
-    total_time_sec: float
-    avg_efficiency: float
-    avg_speed: float
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-# ============================================================================
-# BASELINE RUNNER (from evaluation_comprehensive.py - unchanged)
-# ============================================================================
-
-class BaselineRunner:
-    """Runs baseline FD planners with correct calling conventions."""
 
     def __init__(self, timeout_sec: int = 300):
         self.timeout_sec = timeout_sec
-        self.fd_bin = os.path.abspath(BenchmarkConfig.FD_DOWNWARD_BIN)
-        self.fd_translate = os.path.abspath(BenchmarkConfig.FD_TRANSLATE_BIN)
+        self.fd_bin = os.path.abspath("downward/builds/release/bin/downward.exe")
+        self.fd_translate = os.path.abspath("downward/builds/release/bin/translate/translate.py")
 
-        if not os.path.exists(self.fd_bin):
-            raise FileNotFoundError(f"FD binary not found: {self.fd_bin}")
-        if not os.path.exists(self.fd_translate):
-            raise FileNotFoundError(f"FD translator not found: {self.fd_translate}")
+        if not os.path.exists(self.fd_bin) or not os.path.exists(self.fd_translate):
+            raise FileNotFoundError("Fast Downward binary not found")
 
-    def run(self, domain_file: str, problem_file: str, search_config: str) -> ProblemResult:
-        """Run FD with given search configuration."""
+    def run(self, domain_file: str, problem_file: str, search_config: str) -> DetailedMetrics:
+        """Run FD with comprehensive metrics extraction."""
         problem_name = os.path.basename(problem_file)
 
         try:
-            # ====== STEP 1: TRANSLATE ======
-            logger.info(f"    [TRANSLATE] Starting for {problem_name}...")
-            logger.debug(f"    [TRANSLATE] Domain:  {os.path.abspath(domain_file)}")
-            logger.debug(f"    [TRANSLATE] Problem: {os.path.abspath(problem_file)}")
+            # TRANSLATE PHASE
+            logger.info(f"    [TRANSLATE] {problem_name}...")
 
-            work_dir = os.path.abspath(BenchmarkConfig.FD_TEMP_DIR)
+            work_dir = os.path.abspath("evaluation_temp")
             os.makedirs(work_dir, exist_ok=True)
             sas_file = os.path.join(work_dir, "output.sas")
 
-            # ✅ FIX: Use absolute paths for all file arguments
-            abs_domain = os.path.abspath(domain_file)
-            abs_problem = os.path.abspath(problem_file)
-            abs_sas = os.path.abspath(sas_file)
-            abs_translate_bin = os.path.abspath(self.fd_translate)
-
-            translate_cmd = (
-                f'python "{abs_translate_bin}" '
-                f'"{abs_domain}" "{abs_problem}" '
-                f'--sas-file "{abs_sas}"'
-            )
-
-            logger.debug(f"    [TRANSLATE] Command: {translate_cmd[:150]}...")
+            translate_start = time.time()
 
             result = subprocess.run(
-                translate_cmd,
+                f'python "{self.fd_translate}" "{os.path.abspath(domain_file)}" '
+                f'"{os.path.abspath(problem_file)}" --sas-file "{sas_file}"',
                 shell=True,
-                cwd=os.path.abspath("."),  # ✅ CRITICAL: Run from project root
+                cwd=os.path.abspath("."),
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_sec
             )
 
-            if result.returncode != 0:
-                logger.debug(f"    [TRANSLATE] ❌ FAILED with return code {result.returncode}")
-                return ProblemResult(
+            translate_time = time.time() - translate_start
+
+            if result.returncode != 0 or not os.path.exists(sas_file):
+                logger.debug(f"    [TRANSLATE] Failed: {result.stderr[:200]}")
+                return DetailedMetrics(
                     problem_name=problem_name,
                     planner_name="FD",
                     solved=False,
-                    time_sec=0,
-                    error_reason="translate_error"
+                    wall_clock_time=translate_time,
+                    error_type="translate_error",
+                    error_message=result.stderr[:500]
                 )
 
-            if not os.path.exists(abs_sas):
-                logger.debug(f"    [TRANSLATE] ❌ output.sas not created")
-                return ProblemResult(
-                    problem_name=problem_name,
-                    planner_name="FD",
-                    solved=False,
-                    time_sec=0,
-                    error_reason="translate_no_output"
-                )
+            logger.debug(f"    [TRANSLATE] Success ({os.path.getsize(sas_file)} bytes)")
 
-            sas_size = os.path.getsize(abs_sas)
-            if sas_size == 0:
-                logger.debug(f"    [TRANSLATE] ❌ output.sas is EMPTY (0 bytes)")
-                return ProblemResult(
-                    problem_name=problem_name,
-                    planner_name="FD",
-                    solved=False,
-                    time_sec=0,
-                    error_reason="translate_empty_output"
-                )
-
-            logger.debug(f"    [TRANSLATE] ✅ Success ({sas_size} bytes)")
-
-            # ====== STEP 2: SEARCH ======
-            logger.debug(f"    [SEARCH] Starting with config: {search_config[:50]}...")
-
-            abs_downward_bin = os.path.abspath(self.fd_bin)
-
-            search_cmd = (
-                f'"{abs_downward_bin}" '
-                f'--search "{search_config}" '
-                f'< "{abs_sas}"'
-            )
+            # SEARCH PHASE
+            logger.debug(f"    [SEARCH] Starting...")
 
             search_start = time.time()
 
             result = subprocess.run(
-                search_cmd,
+                f'"{self.fd_bin}" --search "{search_config}" < "{sas_file}"',
                 shell=True,
-                cwd=os.path.dirname(abs_downward_bin),  # downward/builds/release/bin/
+                cwd=os.path.dirname(self.fd_bin),
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_sec
             )
 
-            elapsed = time.time() - search_start
+            search_time = time.time() - search_start
+            total_time = translate_time + search_time
 
             output_text = result.stdout + result.stderr
 
-            if result.returncode != 0:
-                logger.debug(f"    [SEARCH] ⚠️  Non-zero return code: {result.returncode}")
+            logger.debug(f"    [SEARCH] Completed in {search_time:.2f}s")
 
-            logger.debug(f"    [SEARCH] ✅ Completed in {elapsed:.2f}s")
-
-            # ====== STEP 3: PARSE ======
-            logger.debug(f"    [PARSE] Extracting metrics...")
-
-            # Check for solution
+            # CHECK FOR SOLUTION
             if "Solution found" not in output_text and "Plan length:" not in output_text:
-                logger.debug(f"    [PARSE] ❌ No solution found")
-                return ProblemResult(
+                logger.debug(f"    [PARSE] No solution found")
+                return DetailedMetrics(
                     problem_name=problem_name,
                     planner_name="FD",
                     solved=False,
-                    time_sec=elapsed,
-                    error_reason="no_solution"
+                    wall_clock_time=total_time,
+                    translate_time=translate_time,
+                    search_time=search_time,
+                    error_type="no_solution"
                 )
 
-            logger.debug(f"    [PARSE] ✅ Solution detected!")
+            # EXTRACT METRICS
+            metrics_dict = self._parse_fd_output(output_text)
 
-            # Extract metrics
-            metrics = self._parse_fd_output(output_text)
-
-            if metrics is None:
-                logger.debug(f"    [PARSE] ⚠️  Could not extract metrics")
-                return ProblemResult(
+            if metrics_dict is None:
+                logger.debug(f"    [PARSE] Could not extract metrics")
+                return DetailedMetrics(
                     problem_name=problem_name,
                     planner_name="FD",
                     solved=True,
-                    time_sec=elapsed,
-                    error_reason="parse_error"
+                    wall_clock_time=total_time,
+                    translate_time=translate_time,
+                    search_time=search_time,
+                    error_type="parse_error"
                 )
 
-            metrics["solved"] = True
-            metrics["time"] = elapsed
-
-            logger.debug(f"    [PARSE] ✅ Extracted: cost={metrics.get('cost', '?')}, "
-                         f"expansions={metrics.get('expansions', '?')}")
-
-            return ProblemResult(
+            # BUILD RESULT
+            result_metrics = DetailedMetrics(
                 problem_name=problem_name,
                 planner_name="FD",
                 solved=True,
-                time_sec=elapsed,
-                plan_cost=metrics.get('cost', 0),
-                expansions=metrics.get('expansions', 0)
+                wall_clock_time=total_time,
+                translate_time=translate_time,
+                search_time=search_time,
+                plan_cost=metrics_dict.get('cost', 0),
+                plan_length=metrics_dict.get('cost', 0),
+                nodes_expanded=metrics_dict.get('expansions', 0),
+                search_depth=metrics_dict.get('search_depth', 0),
+                branching_factor=metrics_dict.get('branching_factor', 1.0),
+                peak_memory_kb=metrics_dict.get('memory', 0),
             )
 
+            logger.debug(f"    [SUCCESS] cost={result_metrics.plan_cost}, "
+                         f"exp={result_metrics.nodes_expanded}")
+
+            return result_metrics
+
         except subprocess.TimeoutExpired:
-            logger.debug(f"    [TIMEOUT] ❌ Exceeded {self.timeout_sec}s")
-            return ProblemResult(
+            logger.debug(f"    [TIMEOUT] Exceeded {self.timeout_sec}s")
+            return DetailedMetrics(
                 problem_name=problem_name,
                 planner_name="FD",
                 solved=False,
-                time_sec=self.timeout_sec,
-                error_reason="timeout"
+                wall_clock_time=self.timeout_sec,
+                error_type="timeout"
             )
+
         except Exception as e:
-            logger.error(f"    [ERROR] ❌ {e}")
-            return ProblemResult(
+            logger.error(f"    [ERROR] {e}")
+            return DetailedMetrics(
                 problem_name=problem_name,
                 planner_name="FD",
                 solved=False,
-                time_sec=0,
-                error_reason=str(e)[:50]
+                wall_clock_time=0,
+                error_type="exception",
+                error_message=str(e)[:500]
             )
 
     @staticmethod
     def _parse_fd_output(output_text: str) -> Optional[Dict[str, Any]]:
-        """Parse FD output."""
+        """Extract comprehensive metrics from FD output."""
         metrics = {}
 
-        # Extract plan cost (length)
-        match_cost = re.search(r"Plan length:\s*(\d+)", output_text)
-        if match_cost:
-            metrics["cost"] = int(match_cost.group(1))
+        # Plan cost
+        match = re.search(r'Plan length:\s*(\d+)', output_text)
+        if match:
+            metrics['cost'] = int(match.group(1))
 
-        # Extract expansions (all occurrences, take last)
-        matches_exp = list(re.finditer(r"Expanded\s+(\d+)\s+states?", output_text))
-        if matches_exp:
-            metrics["expansions"] = int(matches_exp[-1].group(1))
+        # Expansions (take last)
+        matches = list(re.finditer(r'Expanded\s+(\d+)\s+state', output_text))
+        if matches:
+            metrics['expansions'] = int(matches[-1].group(1))
 
-        # Extract search time
-        matches_time = list(re.finditer(r"Search time:\s+([\d.]+)s", output_text))
-        if matches_time:
-            metrics["search_time"] = float(matches_time[-1].group(1))
+        # Generated states
+        matches = list(re.finditer(r'Generated\s+(\d+)\s+state', output_text))
+        if matches:
+            metrics['generated'] = int(matches[-1].group(1))
+
+        # Search depth
+        match = re.search(r'Search depth:\s*(\d+)', output_text)
+        if match:
+            metrics['search_depth'] = int(match.group(1))
+
+        # Branching factor
+        match = re.search(r'Branching factor:\s*([\d.]+)', output_text)
+        if match:
+            metrics['branching_factor'] = float(match.group(1))
+
+        # Memory
+        match = re.search(r'Peak memory:\s*(\d+)\s*KB', output_text)
+        if match:
+            metrics['memory'] = int(match.group(1))
 
         # Require at least cost and expansions
-        if "cost" not in metrics or "expansions" not in metrics:
+        if 'cost' not in metrics or 'expansions' not in metrics:
             return None
 
         return metrics
 
 
 # ============================================================================
-# GNN POLICY RUNNER - ✅ COMPLETELY REFACTORED
+# GNN POLICY RUNNER - USING MergeEnv
 # ============================================================================
 
 class GNNPolicyRunner:
-    """
-    ✅ FIXED: Runs trained GNN policy using MergeEnv with REAL FD.
-    Uses the exact same logic as load_and_solve_with_gnn_complete.py
-    """
+    """GNN policy runner using real MergeEnv with FD feedback."""
 
     def __init__(self, model_path: str, timeout_sec: int = 300):
         self.model_path = model_path
@@ -429,149 +399,98 @@ class GNNPolicyRunner:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model not found: {model_path}")
 
-        # Import here to avoid dependency errors
         from stable_baselines3 import PPO
         from merge_env import MergeEnv
-
         self.PPO = PPO
         self.MergeEnv = MergeEnv
 
-    def run(self, domain_file: str, problem_file: str) -> ProblemResult:
-        """
-        ✅ FIXED: Run GNN policy on a problem using MergeEnv with real FD.
-
-        This method:
-        1. Loads the trained GNN model
-        2. Creates a MergeEnv (with REAL FD, not debug mode)
-        3. Runs the inference loop with the GNN policy
-        4. Extracts metrics from FD output files
-        5. Returns a ProblemResult with all metrics
-        """
+    def run(self, domain_file: str, problem_file: str) -> DetailedMetrics:
+        """Run GNN policy on a problem."""
         problem_name = os.path.basename(problem_file)
 
         try:
-            # ====================================================================
-            # PHASE 1: LOAD MODEL
-            # ====================================================================
+            start_time = time.time()
 
-            logger.info(f"\n{'=' * 80}")
-            logger.info(f"GNN POLICY: {problem_name}")
-            logger.info(f"{'=' * 80}\n")
-
-            logger.info(f"Loading model from {self.model_path}...")
+            logger.debug(f"    [LOAD] Loading model...")
             model = self.PPO.load(self.model_path)
-            logger.info("✓ Model loaded successfully\n")
+            logger.debug(f"    [LOAD] Model loaded")
 
-            # ====================================================================
-            # PHASE 2: CREATE ENVIRONMENT (REAL FD MODE)
-            # ====================================================================
-
-            logger.info("Creating environment (REAL FD MODE)...")
-            logger.info(f"  Domain:  {os.path.abspath(domain_file)}")
-            logger.info(f"  Problem: {os.path.abspath(problem_file)}")
-
+            logger.debug(f"    [ENV] Creating environment...")
             env = self.MergeEnv(
                 domain_file=os.path.abspath(domain_file),
                 problem_file=os.path.abspath(problem_file),
                 max_merges=50,
-                debug=False,  # ✅ REAL MODE: actual FD interaction
+                debug=False,
                 reward_variant='astar_search',
                 w_search_efficiency=0.30,
                 w_solution_quality=0.20,
                 w_f_stability=0.35,
                 w_state_control=0.15,
             )
+            logger.debug(f"    [ENV] Environment created")
 
-            logger.info("✓ Environment created\n")
-
-            # ====================================================================
-            # PHASE 3: RESET ENVIRONMENT (launches FD)
-            # ====================================================================
-
-            logger.info("Resetting environment (launching FD)...")
-            solve_start_time = time.time()
+            logger.debug(f"    [RESET] Resetting environment...")
+            solve_start = time.time()
             obs, info = env.reset()
-            logger.info("✓ FD launched and initialized\n")
-
-            # ====================================================================
-            # PHASE 4: INFERENCE LOOP
-            # ====================================================================
+            logger.debug(f"    [RESET] Environment reset")
 
             total_reward = 0.0
             steps = 0
             max_steps = 50
+            gnn_decisions = 0
 
-            logger.info("Running GNN decision loop...\n")
+            logger.debug(f"    [INFERENCE] Starting...")
 
             while steps < max_steps:
                 try:
-                    action, _states = model.predict(obs, deterministic=True)
+                    action, _ = model.predict(obs, deterministic=True)
                     obs, reward, done, truncated, info = env.step(int(action))
                     total_reward += reward
                     steps += 1
-
-                    logger.info(
-                        f"Step {steps}: action={int(action)}, reward={reward:.4f}, "
-                        f"total={total_reward:.4f}, done={done or truncated}"
-                    )
+                    gnn_decisions += 1
 
                     if done or truncated:
-                        logger.info("Episode finished\n")
                         break
 
                 except KeyboardInterrupt:
-                    logger.warning("⚠️ Interrupted by user")
+                    logger.warning("Interrupted by user")
                     break
-
                 except Exception as e:
-                    logger.error(f"Step {steps} failed: {e}")
-                    logger.error(traceback.format_exc())
+                    logger.error(f"Step failed: {e}")
                     break
 
-            elapsed = time.time() - solve_start_time
+            solve_time = time.time() - solve_start
+            total_time = time.time() - start_time
 
-            # ====================================================================
-            # PHASE 5: EXTRACT METRICS FROM FD OUTPUT
-            # ====================================================================
+            logger.debug(f"    [INFERENCE] Completed in {steps} steps")
 
-            logger.info("-" * 80)
-            logger.info("EXTRACTING METRICS FROM FD OUTPUT")
-            logger.info("-" * 80 + "\n")
-
+            # Extract metrics from FD output
             plan_cost, expansions, nodes_expanded, search_depth, solution_found = \
                 self._extract_fd_metrics()
 
-            logger.info(f"Problem:        {problem_name}")
-            logger.info(f"Solved:         {'✅ YES' if solution_found else '❌ NO'}")
-            logger.info(f"Time:           {elapsed:.2f}s")
-            logger.info(f"Plan Cost:      {plan_cost if solution_found else 'N/A'}")
-            logger.info(f"Expansions:     {expansions if solution_found else 'N/A'}")
-            logger.info(f"Nodes Expanded: {nodes_expanded if solution_found else 'N/A'}")
-            logger.info(f"Search Depth:   {search_depth if solution_found else 'N/A'}")
-            logger.info(f"Total Reward:   {total_reward:.4f}\n")
-
-            # ====================================================================
-            # PHASE 6: CLEANUP AND RETURN
-            # ====================================================================
+            logger.debug(f"    [EXTRACT] FD metrics extracted")
 
             try:
                 env.close()
             except:
                 pass
 
-            return ProblemResult(
+            result = DetailedMetrics(
                 problem_name=problem_name,
                 planner_name="GNN",
                 solved=solution_found,
-                time_sec=elapsed,
+                wall_clock_time=total_time,
                 plan_cost=plan_cost,
-                expansions=expansions,
                 nodes_expanded=nodes_expanded,
-                search_depth=search_depth
+                search_depth=search_depth,
+                gnn_decisions=gnn_decisions,
+                merge_episodes=steps,
             )
 
+            return result
+
         except Exception as e:
-            logger.error(f"❌ FATAL: {e}")
+            logger.error(f"GNN run failed: {e}")
             logger.error(traceback.format_exc())
 
             try:
@@ -579,22 +498,18 @@ class GNNPolicyRunner:
             except:
                 pass
 
-            return ProblemResult(
+            return DetailedMetrics(
                 problem_name=problem_name,
                 planner_name="GNN",
                 solved=False,
-                time_sec=0,
-                error_reason=str(e)[:50]
+                wall_clock_time=0,
+                error_type="exception",
+                error_message=str(e)[:500]
             )
 
     @staticmethod
     def _extract_fd_metrics() -> Tuple[int, int, int, int, bool]:
-        """
-        ✅ FIXED: Extract metrics from Fast Downward output files.
-
-        Returns:
-            (plan_cost, expansions, nodes_expanded, search_depth, solution_found)
-        """
+        """Extract metrics from FD output files."""
         plan_cost = 0
         expansions = 0
         nodes_expanded = 0
@@ -604,8 +519,7 @@ class GNNPolicyRunner:
         log_file = os.path.join("downward", "fd_output", "log.txt")
 
         if not os.path.exists(log_file):
-            logger.warning(f"FD log file not found: {log_file}")
-            return 0, 0, 0, 0, False
+            return plan_cost, expansions, nodes_expanded, search_depth, solution_found
 
         try:
             with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -627,7 +541,6 @@ class GNNPolicyRunner:
             if match:
                 search_depth = int(match.group(1))
 
-            # Estimate nodes_expanded from expansions
             nodes_expanded = expansions
 
         except Exception as e:
@@ -646,7 +559,7 @@ class EvaluationFramework:
     def __init__(self, output_dir: str = "evaluation_results"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.results: List[ProblemResult] = []
+        self.results: List[DetailedMetrics] = []
 
     def run_comprehensive_evaluation(
             self,
@@ -656,7 +569,7 @@ class EvaluationFramework:
             timeout_sec: int = 300,
             include_baselines: bool = True
     ) -> Dict[str, Any]:
-        """Run complete evaluation: baselines + GNN on all problems."""
+        """Run complete evaluation."""
 
         print_section("COMPREHENSIVE EVALUATION FRAMEWORK")
 
@@ -668,26 +581,27 @@ class EvaluationFramework:
             logger.error("No problems found!")
             return {}
 
-        logger.info(f"Found {len(problems)} problem(s)")
+        logger.info(f"Found {len(problems)} problem(s)\n")
 
         # Run baselines
         if include_baselines:
-            self._run_baselines(domain_file, problems, timeout_sec)
+            self._run_all_baselines(domain_file, problems, timeout_sec)
 
         # Run GNN
         self._run_gnn(domain_file, problems, model_path, timeout_sec)
 
-        # Analyze and report
-        return self._generate_report()
+        # Generate reports
+        return self._generate_comprehensive_report()
 
-    def _run_baselines(self, domain_file: str, problems: List[str], timeout_sec: int):
+    def _run_all_baselines(self, domain_file: str, problems: List[str], timeout_sec: int):
         """Run all baseline configurations."""
-        print_subsection("RUNNING BASELINES")
+        print_subsection("RUNNING BASELINE PLANNERS")
 
         baseline_runner = BaselineRunner(timeout_sec)
 
-        for baseline_config in BenchmarkConfig.BASELINES:
-            logger.info(f"\nRunning baseline: {baseline_config['name']}")
+        for baseline_config in baseline_runner.BASELINES:
+            logger.info(f"\n{baseline_config['name']}")
+            logger.info("-" * 60)
 
             for i, problem in enumerate(problems, 1):
                 logger.info(f"  [{i}/{len(problems)}] {os.path.basename(problem)}")
@@ -695,7 +609,7 @@ class EvaluationFramework:
                 result = baseline_runner.run(
                     domain_file,
                     problem,
-                    baseline_config['search_config']
+                    baseline_config['search']
                 )
                 result.planner_name = baseline_config['name']
                 self.results.append(result)
@@ -712,74 +626,81 @@ class EvaluationFramework:
             result = gnn_runner.run(domain_file, problem)
             self.results.append(result)
 
-    def _generate_report(self) -> Dict[str, Any]:
-        """Generate comprehensive report."""
-        print_section("GENERATING REPORT")
+    def _generate_comprehensive_report(self) -> Dict[str, Any]:
+        """Generate reports and statistics."""
+        print_section("GENERATING COMPREHENSIVE REPORT")
 
         # Group by planner
-        by_planner = {}
+        by_planner = defaultdict(list)
         for result in self.results:
-            if result.planner_name not in by_planner:
-                by_planner[result.planner_name] = []
             by_planner[result.planner_name].append(result)
 
-        # Compute summaries
+        # Compute statistics
         summaries = {}
-        for planner_name, results in by_planner.items():
-            logger.info(f"\nSummary for {planner_name}:")
-
-            solved_results = [r for r in results if r.solved]
-            num_solved = len(solved_results)
-            num_total = len(results)
-            solve_rate = (num_solved / num_total * 100) if num_total > 0 else 0
-
-            times = [r.time_sec for r in solved_results]
-            expansions = [r.expansions for r in solved_results]
-            costs = [r.plan_cost for r in solved_results]
-            efficiencies = [r.efficiency for r in solved_results if r.efficiency != float('inf')]
-            speeds = [r.speed for r in solved_results]
-
-            summary = BenchmarkSummary(
-                planner_name=planner_name,
-                num_problems=num_total,
-                num_solved=num_solved,
-                solve_rate_pct=solve_rate,
-                avg_time_sec=np.mean(times) if times else 0,
-                median_time_sec=np.median(times) if times else 0,
-                avg_expansions=int(np.mean(expansions)) if expansions else 0,
-                median_expansions=int(np.median(expansions)) if expansions else 0,
-                avg_plan_cost=int(np.mean(costs)) if costs else 0,
-                median_plan_cost=int(np.median(costs)) if costs else 0,
-                total_time_sec=sum(times) if times else 0,
-                avg_efficiency=np.mean(efficiencies) if efficiencies else float('inf'),
-                avg_speed=np.mean(speeds) if speeds else 0
-            )
-
+        for planner_name, results_list in by_planner.items():
+            summary = self._compute_statistics(planner_name, results_list)
             summaries[planner_name] = summary
 
-            logger.info(f"  Solved: {num_solved}/{num_total} ({solve_rate:.1f}%)")
-            logger.info(f"  Avg time: {summary.avg_time_sec:.2f}s")
-            logger.info(f"  Avg expansions: {summary.avg_expansions}")
+            logger.info(f"\n{planner_name}:")
+            logger.info(f"  Solve rate: {summary.solve_rate_pct:.1f}%")
+            logger.info(f"  Avg time: {summary.mean_time_sec:.2f}s")
+            logger.info(f"  Avg expansions: {summary.mean_expansions}")
 
         # Export results
-        self._export_results(summaries)
+        self._export_all_results(summaries)
 
         return {
             "summaries": {name: summary.to_dict() for name, summary in summaries.items()},
             "timestamp": datetime.now().isoformat()
         }
 
-    def _export_results(self, summaries: Dict[str, BenchmarkSummary]):
-        """Export results to CSV and JSON."""
+    def _compute_statistics(self, planner_name: str, results_list: List[DetailedMetrics]) -> AggregateStatistics:
+        """Compute comprehensive statistics."""
 
-        # CSV: detailed results
+        solved = [r for r in results_list if r.solved]
+        num_solved = len(solved)
+        num_total = len(results_list)
+
+        times = [r.wall_clock_time for r in solved]
+        expansions = [r.nodes_expanded for r in solved]
+        costs = [r.plan_cost for r in solved]
+        efficiency_scores = [r.efficiency_score() for r in results_list if r.solved]
+
+        unsolved = [r for r in results_list if not r.solved]
+        errors = [r for r in unsolved if r.error_type]
+        timeouts = [r for r in unsolved if r.error_type == "timeout"]
+
+        return AggregateStatistics(
+            planner_name=planner_name,
+            num_problems_total=num_total,
+            num_problems_solved=num_solved,
+            solve_rate_pct=(num_solved / max(num_total, 1)) * 100,
+            mean_time_sec=np.mean(times) if times else 0,
+            median_time_sec=np.median(times) if times else 0,
+            std_time_sec=np.std(times) if times else 0,
+            min_time_sec=np.min(times) if times else 0,
+            max_time_sec=np.max(times) if times else 0,
+            q1_time_sec=np.percentile(times, 25) if times else 0,
+            q3_time_sec=np.percentile(times, 75) if times else 0,
+            mean_expansions=int(np.mean(expansions)) if expansions else 0,
+            median_expansions=int(np.median(expansions)) if expansions else 0,
+            std_expansions=int(np.std(expansions)) if expansions else 0,
+            mean_plan_cost=int(np.mean(costs)) if costs else 0,
+            median_plan_cost=int(np.median(costs)) if costs else 0,
+            std_plan_cost=int(np.std(costs)) if costs else 0,
+            mean_efficiency_score=np.mean(efficiency_scores) if efficiency_scores else float('inf'),
+            unsolved_count=len(unsolved),
+            error_count=len(errors),
+            timeout_count=len(timeouts),
+            total_wall_clock_time_sec=sum(times) if times else 0,
+        )
+
+    def _export_all_results(self, summaries: Dict[str, AggregateStatistics]):
+        """Export results in all formats."""
+
+        # CSV: detailed
         csv_path = self.output_dir / "evaluation_results.csv"
-
-        fieldnames = [
-            'problem_name', 'planner_name', 'solved', 'time_sec',
-            'plan_cost', 'expansions', 'nodes_expanded', 'search_depth',
-            'error_reason', 'efficiency', 'speed'
-        ]
+        fieldnames = list(self.results[0].to_dict().keys()) if self.results else []
 
         with open(csv_path, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -787,7 +708,7 @@ class EvaluationFramework:
             for result in self.results:
                 writer.writerow(result.to_dict())
 
-        logger.info(f"✓ Detailed results: {csv_path}")
+        logger.info(f"✓ CSV: {csv_path}")
 
         # JSON: summary
         json_path = self.output_dir / "evaluation_summary.json"
@@ -797,90 +718,92 @@ class EvaluationFramework:
                 f,
                 indent=2
             )
-        logger.info(f"✓ Summary: {json_path}")
 
-        # Text report
+        logger.info(f"✓ JSON: {json_path}")
+
+        # TXT: comparison report
         self._write_text_report(summaries)
 
-    def _write_text_report(self, summaries: Dict[str, BenchmarkSummary]):
-        """Write formatted text report."""
+    def _write_text_report(self, summaries: Dict[str, AggregateStatistics]):
+        """Write formatted text comparison report."""
 
         report_path = self.output_dir / "comparison_report.txt"
 
-        with open(report_path, 'w') as f:
-            f.write("=" * 90 + "\n")
-            f.write("COMPREHENSIVE EVALUATION REPORT\n")
-            f.write("=" * 90 + "\n\n")
+        try:
+            with open(report_path, 'w') as f:
+                f.write("=" * 90 + "\n")
+                f.write("COMPREHENSIVE EVALUATION - COMPARISON REPORT\n")
+                f.write("=" * 90 + "\n\n")
 
-            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-            f.write(f"Total problems: {len(set(r.problem_name for r in self.results))}\n")
-            f.write(f"Total evaluations: {len(self.results)}\n\n")
+                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+                num_problems = summaries[list(summaries.keys())[0]].num_problems_total if summaries else 0
+                f.write(f"Total problems evaluated: {num_problems}\n\n")
 
-            # Summary table
-            f.write("SUMMARY TABLE\n")
-            f.write("-" * 90 + "\n")
-            f.write(f"{'Planner':<35} {'Solved':<15} {'Avg Time (s)':<15} {'Avg Exp.':<15}\n")
-            f.write("-" * 90 + "\n")
+                # Summary table
+                f.write("SUMMARY TABLE\n")
+                f.write("-" * 90 + "\n")
+                header = (
+                    f"{'Planner':<25} {'Solved':<18} {'Avg Time (s)':<15} "
+                    f"{'Med Time (s)':<15} {'Avg Exp.':<15}"
+                )
+                f.write(header + "\n")
+                f.write("-" * 90 + "\n")
 
-            for planner_name, summary in summaries.items():
-                solved_str = f"{summary.num_solved}/{summary.num_problems} ({summary.solve_rate_pct:.0f}%)"
-                f.write(
-                    f"{planner_name:<35} {solved_str:<15} {summary.avg_time_sec:<15.2f} {summary.avg_expansions:<15}\n")
+                # Sort planners, maybe put 'GNN' first if present
+                planner_names = sorted(summaries.keys())
+                if "GNN" in planner_names:
+                    planner_names.insert(0, planner_names.pop(planner_names.index("GNN")))
 
-            f.write("-" * 90 + "\n\n")
+                for planner_name in planner_names:
+                    if planner_name not in summaries: continue
+                    summary = summaries[planner_name]
+                    solved_str = (
+                        f"{summary.num_problems_solved}/{summary.num_problems_total} "
+                        f"({summary.solve_rate_pct:.1f}%)"
+                    )
+                    avg_exp_str = f"{summary.mean_expans:,}" if summary.num_problems_solved > 0 else "N/A" # Added comma formatting
 
-            # Detailed stats
-            for planner_name, summary in summaries.items():
-                f.write(f"\n{planner_name} DETAILED STATISTICS\n")
-                f.write("-" * 50 + "\n")
-                f.write(f"  Solve Rate:         {summary.solve_rate_pct:.1f}%\n")
-                f.write(f"  Avg Time (solved):  {summary.avg_time_sec:.2f}s\n")
-                f.write(f"  Median Time:        {summary.median_time_sec:.2f}s\n")
-                f.write(f"  Avg Expansions:     {summary.avg_expansions}\n")
-                f.write(f"  Median Expansions:  {summary.median_expansions}\n")
-                f.write(f"  Avg Plan Cost:      {summary.avg_plan_cost}\n")
-                f.write(f"  Total Time:         {summary.total_time_sec:.1f}s\n")
-                f.write(f"  Avg Efficiency:     {summary.avg_efficiency:.4f}\n")
-                f.write(f"  Avg Speed:          {summary.avg_speed:.2f} exp/s\n")
+                    line = (
+                        f"{planner_name:<25} {solved_str:<18} {summary.mean_time_sec:<15.2f} "
+                        f"{summary.median_time_sec:<15.2f} {avg_exp_str:<15}"
+                    )
+                    f.write(line + "\n")
 
-        logger.info(f"✓ Text report: {report_path}")
+                f.write("-" * 90 + "\n\n")
 
+                # Detailed stats per planner (optional, could make report long)
+                # You can add more details here if needed, similar to the JSON summary
 
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
+            logger.info(f"✓ Text report: {report_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to write text report: {e}")
+            logger.error(traceback.format_exc())
 
 def print_section(title: str, width: int = 90):
-    print("\n" + "=" * width)
-    print(f"// {title.upper()}")
-    print("=" * width + "\n")
+    logger.info("\n" + "=" * width)
+    logger.info(f"// {title.upper()}")
+    logger.info("=" * width + "\n")
 
 
 def print_subsection(title: str):
-    print("\n" + "-" * 80)
-    print(f">>> {title}")
-    print("-" * 80 + "\n")
+    logger.info("\n" + "-" * 80)
+    logger.info(f">>> {title}")
+    logger.info("-" * 80 + "\n")
 
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Comprehensive evaluation framework for GNN merge strategy"
-    )
+    parser = argparse.ArgumentParser(description="Comprehensive evaluation framework")
     parser.add_argument("--model", required=True, help="Path to trained model")
     parser.add_argument("--domain", required=True, help="Path to domain PDDL")
     parser.add_argument("--problems", required=True, help="Glob pattern for problems")
-    parser.add_argument("--timeout", type=int, default=300, help="Timeout per problem (seconds)")
+    parser.add_argument("--timeout", type=int, default=300, help="Timeout per problem")
     parser.add_argument("--output", default="evaluation_results", help="Output directory")
-    parser.add_argument("--skip-baselines", action="store_true", help="Skip baseline runs")
+    parser.add_argument("--skip-baselines", action="store_true", help="Skip baselines")
 
     args = parser.parse_args()
 
     framework = EvaluationFramework(args.output)
-
     results = framework.run_comprehensive_evaluation(
         domain_file=args.domain,
         problem_pattern=args.problems,

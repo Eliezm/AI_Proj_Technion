@@ -584,8 +584,8 @@ def main():
     success = run_multi_problem_training(
         benchmark_sequence=benchmark_sequence,
         reward_variant=reward_variant,
-        total_timesteps=10000,  # ✅ NEW: Can be adjusted
-        timesteps_per_problem=500,  # ✅ NEW: Timesteps per problem
+        total_timesteps=5,  # ✅ NEW: Can be adjusted
+        timesteps_per_problem=1,  # ✅ NEW: Timesteps per problem
     )
 
     if not success:

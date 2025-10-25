@@ -473,16 +473,24 @@ class RichMergeQualityReward(RewardFunctionBase):
 
         return penalty
 
-
 class AStarSearchReward(RewardFunctionBase):
-    """✅ FIXED: A*-informed reward with WELL-CALIBRATED bad merge detection."""
+    """
+    ✅ ENHANCED: A*-informed reward with robust signal for long-term learning.
+
+    Key improvements:
+    - Robust F-value stability measurement
+    - Softer bad merge penalties that preserve learning signal
+    - Better A* signal normalization
+    - Reward shaping for smoother learning curves
+    - Success bonuses for terminal states
+    """
 
     def __init__(self,
-                 w_search_efficiency: float = 0.30,
+                 w_search_efficiency: float = 0.25,
                  w_solution_quality: float = 0.20,
-                 w_f_stability: float = 0.35,
+                 w_f_stability: float = 0.40,
                  w_state_control: float = 0.15):
-        super().__init__("AStarSearchReward")
+        super().__init__("EnhancedAStarSearchReward")
 
         # Normalize weights
         total_w = w_search_efficiency + w_solution_quality + w_f_stability + w_state_control
@@ -491,189 +499,309 @@ class AStarSearchReward(RewardFunctionBase):
         self.w_f_stability = w_f_stability / total_w
         self.w_state_control = w_state_control / total_w
 
-        logger.info(f"\n[REWARD] Initialized {self.name}")
-        logger.info(f"  Search Efficiency:   {self.w_search_efficiency:.4f}")
-        logger.info(f"  Solution Quality:    {self.w_solution_quality:.4f}")
-        logger.info(f"  F-Stability:         {self.w_f_stability:.4f}")
-        logger.info(f"  State Control:       {self.w_state_control:.4f}")
+        # ✅ NEW: Calibration parameters for robust normalization
+        self.bf_comfort_zone = 3.0  # BF values 1-3 are good
+        self.depth_comfort_zone = 50  # Typical depth for many problems
+        self.stability_threshold = 0.3  # Threshold for acceptable stability
 
     def compute(self, merge_info: MergeInfo, search_expansions: int = 0,
                 plan_cost: int = 0, is_terminal: bool = False) -> float:
-        """✅ ENHANCED: A*-informed reward with comprehensive bad merge detection."""
+        """✅ ENHANCED: Robust A*-informed reward with better learning signal."""
 
         logger.info(f"\n[REWARD] Computing {self.name}")
-        logger.info(f"  Input:")
-        logger.info(f"    - iteration: {merge_info.iteration}")
-        logger.info(f"    - search_expansions: {search_expansions}")
-        logger.info(f"    - plan_cost: {plan_cost}")
-        logger.info(f"    - is_terminal: {is_terminal}")
 
         # ====================================================================
         # COMPONENT 1: SEARCH EFFICIENCY (Branching Factor)
         # ====================================================================
 
-        MAX_BRANCHING = 10.0
-        bf_score = max(0.0, 1.0 - (merge_info.branching_factor - 1.0) / MAX_BRANCHING)
-        logger.info(f"\n  [1] SEARCH EFFICIENCY (Branching Factor):")
-        logger.info(f"      - branching_factor: {merge_info.branching_factor:.4f}")
-        logger.info(f"      - bf_score: {bf_score:.4f}")
+        # ✅ IMPROVED: More nuanced branching factor scoring
+        bf = merge_info.branching_factor
+
+        if bf < 1.0 or np.isnan(bf) or np.isinf(bf):
+            bf_score = 0.5
+            bf_reason = "invalid BF, using neutral"
+        elif bf <= 1.1:
+            bf_score = 1.0  # Optimal: nearly linear branching
+            bf_reason = "optimal"
+        elif bf <= self.bf_comfort_zone:
+            # Smooth interpolation in comfort zone
+            bf_score = 1.0 - (bf - 1.0) / (self.bf_comfort_zone - 1.0) * 0.3
+            bf_reason = f"good (in comfort zone)"
+        elif bf <= 6.0:
+            # Tolerable range with increasing penalty
+            bf_score = 0.7 - (bf - self.bf_comfort_zone) / (6.0 - self.bf_comfort_zone) * 0.4
+            bf_reason = f"tolerable"
+        else:
+            # Beyond 6: still provide some credit for trying
+            bf_score = max(0.1, 0.3 - (bf - 6.0) / 10.0)
+            bf_reason = "high BF, minimal credit"
+
+        bf_score = float(np.clip(bf_score, 0.0, 1.0))
+        logger.info(f"  [1] BRANCHING FACTOR: {bf:.3f} → score {bf_score:.3f} ({bf_reason})")
 
         # ====================================================================
         # COMPONENT 2: SOLUTION QUALITY (Search Depth)
         # ====================================================================
 
+        # ✅ IMPROVED: Depth scoring with solution bonus
+        depth_score = 0.5  # Default
+        solution_bonus = 0.0
+
         if merge_info.solution_found:
-            MAX_DEPTH = 100
-            depth_norm = min(merge_info.search_depth / MAX_DEPTH, 1.0)
-            solution_score = 1.0 - (depth_norm * 0.5)
-            logger.info(f"\n  [2] SOLUTION QUALITY:")
-            logger.info(f"      - solution_found: True")
-            logger.info(f"      - search_depth: {merge_info.search_depth}")
-            logger.info(f"      - solution_score: {solution_score:.4f}")
+            depth = merge_info.search_depth
+
+            if depth < 1:
+                depth_score = 0.5
+            elif depth <= self.depth_comfort_zone:
+                # Good depths: log scale to avoid over-penalizing
+                depth_score = 1.0 - np.log(depth + 1) / np.log(self.depth_comfort_zone + 1) * 0.5
+                depth_score = float(np.clip(depth_score, 0.5, 1.0))
+            else:
+                # Beyond comfort zone: still positive credit
+                depth_score = max(0.2, 0.5 - (np.log(depth + 1) - np.log(self.depth_comfort_zone + 1)) / 2.0)
+                depth_score = float(np.clip(depth_score, 0.0, 0.5))
+
+            # ✅ NEW: Solution found is genuinely good
+            solution_bonus = 0.3
+            logger.info(f"  [2] SOLUTION QUALITY: depth={depth} → score {depth_score:.3f} + bonus {solution_bonus:.3f}")
         else:
-            solution_score = 0.3
-            logger.info(f"\n  [2] SOLUTION QUALITY:")
-            logger.info(f"      - solution_found: False")
-            logger.info(f"      - solution_score: {solution_score:.4f}")
+            depth_score = 0.2  # Penalty for no solution
+            logger.info(f"  [2] SOLUTION QUALITY: NO SOLUTION → score {depth_score:.3f}")
 
         # ====================================================================
-        # COMPONENT 3: F-VALUE STABILITY
+        # COMPONENT 3: F-VALUE STABILITY (CRITICAL FOR LEARNING)
         # ====================================================================
 
-        f_score = merge_info.f_value_stability
-        logger.info(f"\n  [3] F-VALUE STABILITY:")
-        logger.info(f"      - f_value_stability: {f_score:.4f}")
+        # ✅ ENHANCED: Better F-stability measurement
+        f_stability = self._compute_robust_f_stability(merge_info)
+
+
+        logger.info(f"  [3] F-VALUE STABILITY: {f_stability:.3f}")
+
+        # ✅ NEW: Stability-based learning signal
+        if f_stability > 0.7:
+            stability_bonus = 0.2
+            stability_reason = "excellent stability"
+        elif f_stability > 0.5:
+            stability_bonus = 0.1
+            stability_reason = "good stability"
+        elif f_stability > 0.3:
+            stability_bonus = 0.0
+            stability_reason = "acceptable stability"
+        else:
+            stability_bonus = -0.1
+            stability_reason = "poor stability (but not penalized heavily)"
+
+        logger.info(f"      → {stability_reason}, bonus: {stability_bonus:.3f}")
 
         # ====================================================================
         # COMPONENT 4: STATE CONTROL
         # ====================================================================
 
+        # ✅ IMPROVED: More sophisticated state explosion handling
         if merge_info.states_before > 0:
             explosion_ratio = merge_info.delta_states / merge_info.states_before
-            state_score = max(0.0, 1.0 - abs(explosion_ratio))
-            logger.info(f"\n  [4] STATE CONTROL:")
-            logger.info(f"      - states_before: {merge_info.states_before}")
-            logger.info(f"      - delta_states: {merge_info.delta_states}")
-            logger.info(f"      - explosion_ratio: {explosion_ratio:.4f}")
-            logger.info(f"      - state_score: {state_score:.4f}")
+
+            if explosion_ratio < -0.5:
+                # State reduction is excellent
+                state_score = 1.0
+                state_reason = "excellent reduction"
+            elif explosion_ratio < 0:
+                # Some reduction
+                state_score = 0.8
+                state_reason = "reduction"
+            elif explosion_ratio < 0.3:
+                # Moderate increase is acceptable
+                state_score = 0.8 - explosion_ratio * 0.3
+                state_reason = "minor increase (acceptable)"
+            elif explosion_ratio < 1.0:
+                # Noticeable increase
+                state_score = 0.65 - (explosion_ratio - 0.3) * 0.2
+                state_reason = "significant increase"
+            else:
+                # Major explosion: still provide small credit
+                state_score = max(0.1, 0.4 - np.log(explosion_ratio + 1) * 0.2)
+                state_reason = "major explosion (penalized)"
         else:
             state_score = 0.5
-            logger.info(f"\n  [4] STATE CONTROL:")
-            logger.info(f"      - states_before: 0 (default 0.5)")
-            logger.info(f"      - state_score: {state_score:.4f}")
+            state_reason = "no baseline"
+
+        state_score = float(np.clip(state_score, 0.0, 1.0))
+        logger.info(
+            f"  [4] STATE CONTROL: ratio={merge_info.delta_states / max(merge_info.states_before, 1):.3f} → score {state_score:.3f} ({state_reason})")
 
         # ====================================================================
         # WEIGHTED COMBINATION
         # ====================================================================
 
         composite = (
-            self.w_search_efficiency * bf_score +
-            self.w_solution_quality * solution_score +
-            self.w_f_stability * f_score +
-            self.w_state_control * state_score
+                self.w_search_efficiency * bf_score +
+                self.w_solution_quality * depth_score +
+                self.w_f_stability * f_stability +
+                self.w_state_control * state_score
         )
 
-        logger.info(f"\n  [WEIGHTED COMBINATION]:")
-        logger.info(f"      - {self.w_search_efficiency:.4f} * {bf_score:.4f} = {self.w_search_efficiency * bf_score:.4f}")
-        logger.info(f"      - {self.w_solution_quality:.4f} * {solution_score:.4f} = {self.w_solution_quality * solution_score:.4f}")
-        logger.info(f"      - {self.w_f_stability:.4f} * {f_score:.4f} = {self.w_f_stability * f_score:.4f}")
-        logger.info(f"      - {self.w_state_control:.4f} * {state_score:.4f} = {self.w_state_control * state_score:.4f}")
-        logger.info(f"      - composite: {composite:.4f}")
+        logger.info(f"\n  [COMPOSITE]: {composite:.3f}")
+        logger.info(f"    = {self.w_search_efficiency:.3f}*{bf_score:.3f} (bf)")
+        logger.info(f"    + {self.w_solution_quality:.3f}*{depth_score:.3f} (depth)")
+        logger.info(f"    + {self.w_f_stability:.3f}*{f_stability:.3f} (stability)")
+        logger.info(f"    + {self.w_state_control:.3f}*{state_score:.3f} (state)")
 
-        # ====================================================================
-        # SCALE TO [-1, 1]
-        # ====================================================================
-
+        # Scale to [-1, 1]
         reward = 2.0 * composite - 1.0
-        logger.info(f"\n  [SCALE TO [-1, 1]]:")
-        logger.info(f"      - 2.0 * {composite:.4f} - 1.0 = {reward:.4f}")
 
         # ====================================================================
-        # ✅ BAD MERGE DETECTION WITH PENALTIES
+        # BONUSES & PENALTIES (MILD - Preserve Learning Signal)
         # ====================================================================
 
-        logger.info(f"\n  [BAD MERGE DETECTION]:")
-        bad_merge_penalty = self._detect_and_penalize_bad_merges(merge_info)
+        # ✅ Solution bonus
+        reward += solution_bonus
+        logger.info(f"\n  [BONUSES]:")
+        logger.info(f"    + Solution bonus: {solution_bonus:.3f}")
 
-        if bad_merge_penalty != 0.0:
-            logger.warning(f"      ⚠️  Applied penalty: {bad_merge_penalty:.4f}")
-            logger.warning(f"      Reasons detected:")
-            for reason in self.bad_merge_reasons:
-                logger.warning(f"        - {reason}")
+        # ✅ Stability bonus
+        reward += stability_bonus
+        logger.info(f"    + Stability bonus: {stability_bonus:.3f}")
 
+        # ✅ BAD MERGE DETECTION (SOFT PENALTIES)
+        bad_merge_penalty = self._detect_bad_merges_soft(merge_info)
         reward += bad_merge_penalty
 
-        # ====================================================================
-        # TERMINAL BONUS
-        # ====================================================================
+        if bad_merge_penalty != 0.0:
+            logger.info(f"    + Bad merge penalty: {bad_merge_penalty:.3f}")
 
+        # ✅ TERMINAL BONUS
         if is_terminal and merge_info.solution_found:
-            reward += 0.5
-            logger.info(f"\n  [TERMINAL BONUS]:")
-            logger.info(f"      - is_terminal: {is_terminal}")
-            logger.info(f"      - solution_found: {merge_info.solution_found}")
-            logger.info(f"      - bonus: +0.5")
-            logger.info(f"      - final_reward: {reward:.4f}")
+            terminal_bonus = 0.3
+            reward += terminal_bonus
+            logger.info(f"    + Terminal bonus: {terminal_bonus:.3f}")
 
         # ====================================================================
-        # STORE COMPONENTS
+        # FINAL CLIPPING & LOGGING
         # ====================================================================
 
+        reward = float(np.clip(reward, -1.0, 1.0))
+
+        logger.info(f"\n  [FINAL REWARD]: {reward:.4f}")
+        logger.info(f"  [RANGE]: [-1.0, +1.0] (clipped)\n")
+
+        # Store components
         self.component_values = {
-            'branching_factor_score': bf_score,
-            'solution_quality_score': solution_score,
-            'f_stability': f_score,
-            'state_control': state_score,
-            'composite': composite,
-            'bad_merge_penalty': bad_merge_penalty,
+            'bf_score': float(bf_score),
+            'depth_score': float(depth_score),
+            'solution_bonus': float(solution_bonus),
+            'f_stability': float(f_stability),
+            'stability_bonus': float(stability_bonus),
+            'state_score': float(state_score),
+            'bad_merge_penalty': float(bad_merge_penalty),
+            'composite': float(composite),
             'total': float(reward)
         }
 
-        logger.info(f"\n  [FINAL]:")
-        for name, value in self.component_values.items():
-            logger.info(f"      - {name:<25} {value:+.4f}")
+        return reward
 
-        logger.info(f"\n  Final reward: {float(reward):.4f}\n")
+    def _compute_robust_f_stability(self, merge_info: MergeInfo) -> float:
+        """
+        ✅ ENHANCED: Compute F-stability with robust handling of edge cases.
 
-        return float(reward)
+        This is the MOST IMPORTANT metric for learning quality.
+        """
 
-    def _detect_and_penalize_bad_merges(self, merge_info: MergeInfo) -> float:
-        """✅ FIXED: Mild penalties that don't crush learning signal."""
+        # ✅ NEW: Better handling of valid vs invalid values
+        f_before_valid = [
+            f for f in (merge_info.f_before if merge_info.f_before else [])
+            if f != float('inf') and f >= 0 and f < 1_000_000_000
+        ]
+
+        f_after_valid = [
+            f for f in (merge_info.f_after if merge_info.f_after else [])
+            if f != float('inf') and f >= 0 and f < 1_000_000_000
+        ]
+
+        # Edge case 1: No valid data
+        if not f_before_valid or not f_after_valid:
+            logger.debug(
+                f"      [F-STABILITY] Insufficient valid data: {len(f_before_valid)} before, {len(f_after_valid)} after")
+            return 0.5  # Neutral score
+
+        # Edge case 2: Too few samples
+        if len(f_after_valid) < 2:
+            return 0.5
+
+        # ✅ IMPROVED: Use median-based stability (robust to outliers)
+        before_median = float(np.median(f_before_valid))
+        after_median = float(np.median(f_after_valid))
+
+        before_std = float(np.std(f_before_valid)) if len(f_before_valid) > 1 else 0.0
+        after_std = float(np.std(f_after_valid)) if len(f_after_valid) > 1 else 0.0
+
+        # Normalized change in median
+        if before_median > 0:
+            median_change = abs(after_median - before_median) / before_median
+        else:
+            median_change = 0.0
+
+        # Normalized change in variance
+        if before_std > 0:
+            std_change = abs(after_std - before_std) / before_std
+        else:
+            std_change = 0.0 if after_std == 0 else 1.0
+
+        # ✅ IMPROVED: Weighted combination (median is more important than std)
+        change_metric = 0.7 * np.clip(median_change, 0, 1) + 0.3 * np.clip(std_change, 0, 1)
+
+        # Convert to stability score: lower change = higher stability
+        f_stability = max(0.0, 1.0 - change_metric)
+
+        logger.debug(
+            f"      [F-STABILITY] median: {before_median:.1f}→{after_median:.1f}, std: {before_std:.1f}→{after_std:.1f}")
+        logger.debug(f"      [F-STABILITY] change_metric: {change_metric:.3f}, stability: {f_stability:.3f}")
+
+        return float(np.clip(f_stability, 0.0, 1.0))
+
+    def _detect_bad_merges_soft(self, merge_info: MergeInfo) -> float:
+        """
+        ✅ ENHANCED: Detect bad merges with SOFT penalties that preserve learning signal.
+
+        Key: Don't over-penalize—let the main reward components handle it.
+        Only penalize CRITICAL failures.
+        """
         penalty = 0.0
         self.bad_merge_reasons = []
 
-        # ✅ ONLY critical failures get penalized
-        # All other bad merges still contribute learning signal
-
-        # CHECK 1: Goal becomes unreachable (ONLY this is catastrophic)
+        # CRITICAL CHECK 1: Goal becomes unreachable
         goal_reachable = any(
             f != float('inf') and f < 1_000_000_000
-            for f in merge_info.f_after
+            for f in (merge_info.f_after if merge_info.f_after else [])
         )
+
         if not goal_reachable:
-            penalty = -1.0  # ✅ MILD: was -5.0
-            self._log_bad_merge_detected(
-                "[CRITICAL] Goal unreachable")
-            return penalty
+            penalty -= 0.5  # ✅ MILD penalty for critical failure
+            self._log_bad_merge_detected("Goal unreachable (CRITICAL)")
+            return penalty  # Return early—this is catastrophic
 
         # CHECK 2: Very poor F-stability (only if REALLY bad)
-        if merge_info.f_value_stability < 0.1:
-            penalty -= 0.5  # ✅ MILD: was -2.5
-            self._log_bad_merge_detected(
-                f"[WARNING] F-stability very poor: {merge_info.f_value_stability:.4f}")
+        if merge_info.f_value_stability < 0.15:
+            penalty -= 0.15  # ✅ VERY MILD
+            self._log_bad_merge_detected(f"F-stability extremely poor: {merge_info.f_value_stability:.3f}")
 
-        # CHECK 3: Extreme state explosion (only if MASSIVE)
-        expected_product = merge_info.ts1_size * merge_info.ts2_size
-        if merge_info.states_after > expected_product * 5.0:  # ✅ was 2.5
-            penalty -= 0.3  # ✅ MILD: was -2.0
-            self._log_bad_merge_detected(
-                f"[WARNING] Extreme explosion: {merge_info.states_after}")
+        # CHECK 3: Unreachable states > 90% (indicates broken abstraction)
+        unreachable_count = sum(
+            1 for f in (merge_info.f_after if merge_info.f_after else [])
+            if f == float('inf') or f >= 1_000_000_000
+        )
 
-        # ✅ REMOVED: All moderate penalties (they block learning!)
-        # The composite score handles those automatically
+        total_states = len(merge_info.f_after) if merge_info.f_after else 1
+        unreachability_ratio = unreachable_count / max(total_states, 1)
 
-        logger.info(f"      Bad merge penalty: {penalty:.4f}")
+        if unreachability_ratio > 0.9:
+            penalty -= 0.1  # ✅ MILD: most states unreachable
+            self._log_bad_merge_detected(f"High unreachability: {unreachability_ratio * 100:.1f}%")
+
+        # ✅ REMOVED: Other penalties (let composite score handle them)
+
         return penalty
+
 
 def create_reward_function(variant: str, **kwargs) -> RewardFunctionBase:
     """

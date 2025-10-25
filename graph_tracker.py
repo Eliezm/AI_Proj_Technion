@@ -28,6 +28,8 @@ try:
 except ImportError:
     plt = None
 
+logger = logging.getLogger(__name__)
+
 # ------------------------------------------------------------------------------
 #  Configuration and Constants
 # ------------------------------------------------------------------------------
@@ -174,22 +176,62 @@ class GraphTracker:
         next_node_id (int): A counter for allocating unique IDs to new merged nodes.
     """
 
-    def __init__(self, ts_json_path: str, cg_json_path: str, is_debug: bool = False):
-        """
-        Initializes the GraphTracker by loading the initial graph structure.
+    # def __init__(self, ts_json_path: str, cg_json_path: str, is_debug: bool = False):
+    #     """
+    #     Initializes the GraphTracker by loading the initial graph structure.
+    #
+    #     Args:
+    #         ts_json_path (str): Path to the JSON file containing the list of
+    #                             initial transition systems.
+    #         cg_json_path (str): Path to the JSON file defining the causal graph
+    #                             edges between variables.
+    #         is_debug (bool): If True, runs in debug mode which may alter behavior,
+    #                          e.g., by creating a dummy graph if files are missing.
+    #     """
+    #     self.graph = nx.DiGraph()
+    #     self.varset_to_node: Dict[FrozenSet, Union[int, str]] = {}
+    #     self.next_node_id: int = 0
+    #     self.is_debug = is_debug
+    #
+    #     # ✅ ADD: Caching for expensive computations
+    #     self._centrality_cache: Optional[Dict] = None
+    #     self._centrality_cache_valid = False
+    #     self._max_vars_cache: Optional[int] = None
+    #     self._max_iter_cache: Optional[int] = None
+    #     self._graph_hash_last = None  # Track if graph changed
+    #
+    #     logging.info("Initializing GraphTracker...")
+    #     try:
+    #         self._load_atomic_systems(ts_json_path)
+    #         self._load_causal_edges(cg_json_path)
+    #     except Exception as e:
+    #         logging.error(f"Failed during initial graph loading: {e}")
+    #         if not self.is_debug:
+    #             # In non-debug mode, this is a fatal error.
+    #             raise
+    #         else:
+    #             # In debug mode, we can proceed with an empty graph.
+    #             logging.warning("Proceeding with an empty graph in debug mode.")
 
-        Args:
-            ts_json_path (str): Path to the JSON file containing the list of
-                                initial transition systems.
-            cg_json_path (str): Path to the JSON file defining the causal graph
-                                edges between variables.
-            is_debug (bool): If True, runs in debug mode which may alter behavior,
-                             e.g., by creating a dummy graph if files are missing.
-        """
+    # --- REPLACE THE EXISTING __init__ METHOD WITH THIS ---
+    def __init__(self, ts_json_path: str, cg_json_path: str, is_debug: bool = False):
+        """Initialize with caching infrastructure."""
         self.graph = nx.DiGraph()
         self.varset_to_node: Dict[FrozenSet, Union[int, str]] = {}
         self.next_node_id: int = 0
         self.is_debug = is_debug
+        # ✅ NEW: Persistent caches (survive across observations)
+        self._centrality_cache: Optional[Dict] = None
+        self._centrality_cache_valid = False
+        self._max_vars_cache: Optional[int] = None
+        self._max_iter_cache: Optional[int] = None
+        self._f_stats_cache: Dict[int, Tuple[float, float, float, float]] = {}  # Cache for f_stats
+        self._graph_hash_last = None
+        # Note: _edge_features_cache and _node_features_cache were mentioned
+        # in the prompt but not used in the provided methods, so omitting them for now.
+        # Add them here if needed later:
+        # self._edge_features_cache: Optional[np.ndarray] = None
+        # self._node_features_cache: Dict[int, np.ndarray] = {}
 
         logging.info("Initializing GraphTracker...")
         try:
@@ -198,11 +240,107 @@ class GraphTracker:
         except Exception as e:
             logging.error(f"Failed during initial graph loading: {e}")
             if not self.is_debug:
-                # In non-debug mode, this is a fatal error.
                 raise
             else:
-                # In debug mode, we can proceed with an empty graph.
                 logging.warning("Proceeding with an empty graph in debug mode.")
+
+    # --- END OF REPLACEMENT FOR __init__ ---
+
+    # --- ADD THESE NEW METHODS INSIDE THE GraphTracker CLASS ---
+
+    def _get_graph_hash(self) -> str:
+        """✅ Quick hash to detect graph changes."""
+        # Hash based on edges (nodes are implicit)
+        # Using sorted edges ensures hash consistency regardless of internal order
+        edges_tuple = tuple(sorted(self.graph.edges()))
+        return str(hash(edges_tuple))
+
+    def _invalidate_caches(self):
+        """Call ONLY after actual graph modification."""
+        logging.debug("Invalidating GraphTracker caches...")  # Added log
+        self._centrality_cache_valid = False
+        self._f_stats_cache.clear()
+        # Invalidate others if added later
+        # self._edge_features_cache = None
+        # self._node_features_cache.clear()
+        self._graph_hash_last = None  # Reset graph hash tracking
+
+    def get_centrality(self, force_recompute: bool = False) -> Dict:
+        """✅ CACHED: Return cached centrality or compute once."""
+        if force_recompute:
+            self._centrality_cache_valid = False
+
+        # Only recompute if cache is marked invalid
+        if not self._centrality_cache_valid:
+            logging.debug("Computing centrality (cached)...")
+            try:
+                # Handle potentially empty or disconnected graphs
+                if self.graph.number_of_nodes() > 0:
+                    self._centrality_cache = nx.closeness_centrality(self.graph)
+                else:
+                    self._centrality_cache = {}
+            except nx.NetworkXError:  # Handles disconnected graph case
+                logging.warning(
+                    "Graph is disconnected, centrality might be misleading. Computing per component (using closeness_centrality).")
+                self._centrality_cache = nx.closeness_centrality(
+                    self.graph)  # Or handle components separately if needed
+            self._centrality_cache_valid = True  # Mark as valid even if empty/disconnected
+
+        return self._centrality_cache if self._centrality_cache is not None else {}
+
+    def get_max_vars(self) -> int:
+        """✅ CACHED: Return max incorporated variables."""
+        # Compute only if cache is empty
+        if self._max_vars_cache is None:
+            logging.debug("Computing max_vars (cached)...")
+            self._max_vars_cache = max(
+                (len(d.get("incorporated_variables", [])) for _, d in self.graph.nodes(data=True)),
+                default=1  # Default if graph is empty
+            ) or 1  # Ensure it's at least 1 if max returns 0
+        return self._max_vars_cache
+
+    def get_max_iter(self) -> int:
+        """✅ CACHED: Return max iteration level."""
+        # Compute only if cache is empty
+        if self._max_iter_cache is None:
+            logging.debug("Computing max_iter (cached)...")
+            self._max_iter_cache = max(
+                (d.get("iteration", 0) for _, d in self.graph.nodes(data=True)),
+                default=0  # Default if graph is empty
+            ) or 1  # Ensure it's at least 1 if max returns 0
+        return self._max_iter_cache
+
+    # --- END OF NEW METHODS TO ADD ---
+
+    # def _invalidate_caches(self):
+    #     """Call after any graph modification."""
+    #     self._centrality_cache_valid = False
+    #     self._graph_hash_last = None
+    #
+    # def get_centrality(self) -> Dict:
+    #     """Return cached centrality or compute once."""
+    #     if not self._centrality_cache_valid:
+    #         self._centrality_cache = nx.closeness_centrality(self.graph)
+    #         self._centrality_cache_valid = True
+    #     return self._centrality_cache
+    #
+    # def get_max_vars(self) -> int:
+    #     """Return cached max_vars."""
+    #     if self._max_vars_cache is None:
+    #         self._max_vars_cache = max(
+    #             (len(d.get("incorporated_variables", [])) for _, d in self.graph.nodes(data=True)),
+    #             default=1
+    #         ) or 1
+    #     return self._max_vars_cache
+
+    # def get_max_iter(self) -> int:
+    #     """Return cached max_iter."""
+    #     if self._max_iter_cache is None:
+    #         self._max_iter_cache = max(
+    #             (d.get("iteration", 0) for _, d in self.graph.nodes(data=True)),
+    #             default=0
+    #         ) or 1
+    #     return self._max_iter_cache
 
     def update_graph(self, ts_json_path: str) -> None:
         """
@@ -228,98 +366,190 @@ class GraphTracker:
         except Exception as e:
             logging.warning(f"Could not parse or process TS JSON from '{ts_json_path}': {e}")
 
+    # def merge_nodes(self, node_ids: List[Union[int, str]]) -> None:
+    #     """
+    #     Merges two nodes in the graph to create a new, composite node.
+    #
+    #     This is the primary state-changing operation driven by the RL agent.
+    #
+    #     Method of Action:
+    #     1.  Retrieves the TS data for the two nodes to be merged (`A` and `B`).
+    #     2.  Computes the new merged TS using `merge_transition_systems`.
+    #     3.  Assigns a new, unique ID (`C`) to the merged TS.
+    #     4.  Adds the new node `C` to the graph.
+    #     5.  Rewires all incoming/outgoing edges from `A` and `B` to point to `C`.
+    #     6.  Removes the original nodes `A` and `B` from the graph.
+    #
+    #     Text Diagram of Edge Rewiring:
+    #     BEFORE MERGE:
+    #     [P1] -> [A] -> [S1]
+    #     [P2] -> [B] -> [S2]
+    #
+    #     AFTER MERGING A and B into C:
+    #     [P1] -> [C] -> [S1]
+    #     [P2] -> [C] -> [S2]
+    #     """
+    #     """
+    #     ✅ FIXED: Merges two nodes with validation.
+    #     """
+    #     if len(node_ids) != 2:
+    #         raise ValueError(f"merge_nodes requires exactly two node IDs, got {len(node_ids)}")
+    #
+    #     a, b = node_ids
+    #
+    #     # ✅ NEW: Comprehensive validation
+    #     if a not in self.graph:
+    #         raise KeyError(f"Node {a} not in graph. Available: {list(self.graph.nodes())}")
+    #     if b not in self.graph:
+    #         raise KeyError(f"Node {b} not in graph. Available: {list(self.graph.nodes())}")
+    #
+    #     # ✅ NEW: Prevent self-merge
+    #     if a == b:
+    #         raise ValueError(f"Cannot merge node with itself: {a}")
+    #
+    #     # ✅ NEW: Verify nodes are connected (optional, but good validation)
+    #     if not (self.graph.has_edge(a, b) or self.graph.has_edge(b, a)):
+    #         print(f"[WARNING] Merging disconnected nodes {a}, {b}")
+    #
+    #     logging.info(f"Merging nodes {a} and {b}...")
+    #     ts1 = self.graph.nodes[a]
+    #     ts2 = self.graph.nodes[b]
+    #
+    #     # 1. Compute the merged transition system.
+    #     merged_ts = merge_transition_systems(ts1, ts2)
+    #     new_id = self.next_node_id
+    #     self.next_node_id += 1
+    #
+    #     # 2. Add the new merged node to the graph.
+    #     self.graph.add_node(new_id, **merged_ts)
+    #     var_key = frozenset(merged_ts["incorporated_variables"])
+    #     self.varset_to_node[var_key] = new_id
+    #
+    #     # 3. Rewire edges from the original nodes to the new node.
+    #     self._rewire_edges(a, new_id)
+    #     self._rewire_edges(b, new_id)
+    #
+    #     # 4. Remove the original nodes.
+    #     self.graph.remove_nodes_from([a, b])
+    #
+    #     self._invalidate_caches()  # ✅ ADD THIS LINE
+    #     logging.info(f"Successfully merged nodes into new node {new_id} with {merged_ts['num_states']} states.")
+
+    # --- REPLACE THE EXISTING merge_nodes METHOD WITH THIS ---
     def merge_nodes(self, node_ids: List[Union[int, str]]) -> None:
-        """
-        Merges two nodes in the graph to create a new, composite node.
-
-        This is the primary state-changing operation driven by the RL agent.
-
-        Method of Action:
-        1.  Retrieves the TS data for the two nodes to be merged (`A` and `B`).
-        2.  Computes the new merged TS using `merge_transition_systems`.
-        3.  Assigns a new, unique ID (`C`) to the merged TS.
-        4.  Adds the new node `C` to the graph.
-        5.  Rewires all incoming/outgoing edges from `A` and `B` to point to `C`.
-        6.  Removes the original nodes `A` and `B` from the graph.
-
-        Text Diagram of Edge Rewiring:
-        BEFORE MERGE:
-        [P1] -> [A] -> [S1]
-        [P2] -> [B] -> [S2]
-
-        AFTER MERGING A and B into C:
-        [P1] -> [C] -> [S1]
-        [P2] -> [C] -> [S2]
-        """
-        """
-        ✅ FIXED: Merges two nodes with validation.
-        """
+        """✅ FIXED: Merges nodes and invalidates caches."""
         if len(node_ids) != 2:
             raise ValueError(f"merge_nodes requires exactly two node IDs, got {len(node_ids)}")
 
         a, b = node_ids
 
-        # ✅ NEW: Comprehensive validation
+        # Validation (kept from your existing code)
         if a not in self.graph:
             raise KeyError(f"Node {a} not in graph. Available: {list(self.graph.nodes())}")
         if b not in self.graph:
             raise KeyError(f"Node {b} not in graph. Available: {list(self.graph.nodes())}")
-
-        # ✅ NEW: Prevent self-merge
         if a == b:
             raise ValueError(f"Cannot merge node with itself: {a}")
-
-        # ✅ NEW: Verify nodes are connected (optional, but good validation)
         if not (self.graph.has_edge(a, b) or self.graph.has_edge(b, a)):
-            print(f"[WARNING] Merging disconnected nodes {a}, {b}")
+            # Keep this warning or remove if merging disconnected is intended
+            logger.warning(f"Merging potentially disconnected nodes {a}, {b}")
 
         logging.info(f"Merging nodes {a} and {b}...")
         ts1 = self.graph.nodes[a]
         ts2 = self.graph.nodes[b]
 
-        # 1. Compute the merged transition system.
+        # Compute the merged transition system.
         merged_ts = merge_transition_systems(ts1, ts2)
         new_id = self.next_node_id
         self.next_node_id += 1
 
-        # 2. Add the new merged node to the graph.
+        # Add the new merged node to the graph.
         self.graph.add_node(new_id, **merged_ts)
         var_key = frozenset(merged_ts["incorporated_variables"])
         self.varset_to_node[var_key] = new_id
 
-        # 3. Rewire edges from the original nodes to the new node.
+        # Rewire edges from the original nodes to the new node.
         self._rewire_edges(a, new_id)
         self._rewire_edges(b, new_id)
 
-        # 4. Remove the original nodes.
+        # Remove the original nodes.
         self.graph.remove_nodes_from([a, b])
+
+        # ✅ KEY CHANGE: Invalidate caches AFTER modification
+        self._invalidate_caches()
+
+        # ✅ Reset max_vars and max_iter caches as they might change
+        self._max_vars_cache = None
+        self._max_iter_cache = None
+
         logging.info(f"Successfully merged nodes into new node {new_id} with {merged_ts['num_states']} states.")
 
+    # --- END OF REPLACEMENT FOR merge_nodes ---
+
+    # def f_stats(self, node_id: Union[int, str]) -> Tuple[float, float, float, float]:
+    #     """
+    #     Calculates statistics for the 'f_before' values of a given node.
+    #
+    #     The 'f_before' list contains heuristic values for each abstract state
+    #     within the node's transition system. These stats are used as features
+    #     for the GNN policy.
+    #
+    #     Args:
+    #         node_id: The ID of the node to analyze.
+    #
+    #     Returns:
+    #         A tuple of (min, mean, max, std_dev) of the f-values. Returns
+    #         (0.0, 0.0, 0.0, 0.0) if no f-values are present.
+    #     """
+    #     if node_id not in self.graph.nodes:
+    #         return 0.0, 0.0, 0.0, 0.0
+    #
+    #     f_values = self.graph.nodes[node_id].get("f_before", [])
+    #
+    #     if not f_values:
+    #         return 0.0, 0.0, 0.0, 0.0
+    #
+    #     arr = np.array(f_values, dtype=np.float32)
+    #     return float(arr.min()), float(arr.mean()), float(arr.max()), float(arr.std())
+
+    # --- REPLACE THE EXISTING f_stats METHOD WITH THIS ---
     def f_stats(self, node_id: Union[int, str]) -> Tuple[float, float, float, float]:
-        """
-        Calculates statistics for the 'f_before' values of a given node.
+        """✅ CACHED: Memoized F-statistics computation."""
+        # Check cache first
+        if node_id in self._f_stats_cache:
+            return self._f_stats_cache[node_id]
 
-        The 'f_before' list contains heuristic values for each abstract state
-        within the node's transition system. These stats are used as features
-        for the GNN policy.
-
-        Args:
-            node_id: The ID of the node to analyze.
-
-        Returns:
-            A tuple of (min, mean, max, std_dev) of the f-values. Returns
-            (0.0, 0.0, 0.0, 0.0) if no f-values are present.
-        """
+        # Compute only if not cached
+        logging.debug(f"Computing f_stats for node {node_id} (cached)...")  # Added log
         if node_id not in self.graph.nodes:
-            return 0.0, 0.0, 0.0, 0.0
+            result = (0.0, 0.0, 0.0, 0.0)
+        else:
+            # Filter f_values ONCE
+            f_values_raw = self.graph.nodes[node_id].get("f_before", [])
+            # Filter out inf and large values more robustly
+            f_values = [f for f in f_values_raw if f != float('inf') and f < 1_000_000_000]
 
-        f_values = self.graph.nodes[node_id].get("f_before", [])
+            if not f_values:  # Check if list is empty AFTER filtering
+                result = (0.0, 0.0, 0.0, 0.0)
+            else:
+                arr = np.array(f_values, dtype=np.float32)
+                # Handle potential empty array after filtering again (safety)
+                if arr.size == 0:
+                    result = (0.0, 0.0, 0.0, 0.0)
+                else:
+                    # Use np.nanmin, np.nanmean etc. if NaNs are possible, otherwise regular functions are fine
+                    result = (
+                        float(np.min(arr)),
+                        float(np.mean(arr)),
+                        float(np.max(arr)),
+                        float(np.std(arr))
+                    )
 
-        if not f_values:
-            return 0.0, 0.0, 0.0, 0.0
+        # Cache for next time
+        self._f_stats_cache[node_id] = result
+        return result
 
-        arr = np.array(f_values, dtype=np.float32)
-        return float(arr.min()), float(arr.mean()), float(arr.max()), float(arr.std())
+    # --- END OF REPLACEMENT FOR f_stats ---
 
     def _load_atomic_systems(self, ts_json_path: str) -> None:
         """
@@ -408,6 +638,11 @@ class GraphTracker:
             return
 
         ts_data = ts.copy()
+
+        # ✅ MEMORY: Don't store full transitions - just count them
+        transitions = ts_data.pop("transitions", [])
+        ts_data["num_transitions"] = len(transitions)
+
         ts_data.pop("transitions", None)
 
         # ✅ NEW: Comprehensive validation

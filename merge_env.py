@@ -192,9 +192,21 @@ class MergeEnv(gym.Env):
 
         # ✅ Define observation and action spaces (for gym.Env)
         self.feat_dim = 19  # Number of node features per node ✅ NEW: Expanded feature set
+        # self.observation_space = spaces.Dict({
+        #     "x": spaces.Box(0.0, 1.0, shape=(100, self.feat_dim), dtype=np.float32),
+        #     "edge_index": spaces.Box(0, 100, shape=(2, 1000), dtype=np.int64),
+        #     "num_nodes": spaces.Box(0, 100, shape=(), dtype=np.int32),
+        #     "num_edges": spaces.Box(0, 1000, shape=(), dtype=np.int32),
+        # })
+        # ✅ UPDATED: Add edge features to observation space
         self.observation_space = spaces.Dict({
             "x": spaces.Box(0.0, 1.0, shape=(100, self.feat_dim), dtype=np.float32),
             "edge_index": spaces.Box(0, 100, shape=(2, 1000), dtype=np.int64),
+            "edge_features": spaces.Box(  # ✅ NEW
+                -1.0, 1.0,
+                shape=(1000, 8),
+                dtype=np.float32
+            ),
             "num_nodes": spaces.Box(0, 100, shape=(), dtype=np.int32),
             "num_edges": spaces.Box(0, 1000, shape=(), dtype=np.int32),
         })
@@ -1442,105 +1454,331 @@ class MergeEnv(gym.Env):
                     expansions = int(m2[-1].group(1))
         return plan_cost, expansions
 
+    # ============================================================================
+    # ✅ NEW: Extract rich edge features for GNN learning
+    # ============================================================================
+
+    def _extract_edge_features(self) -> np.ndarray:
+        """
+        ✅ NEW: Extract rich features about merge candidates.
+
+        For each edge (u, v), compute:
+        1. Relative size difference
+        2. Expected merge size ratio
+        3. Shared variable count
+        4. Reachability metrics
+        5. Iteration difference
+        6. Centrality similarity
+        7. F-value consistency
+        8. Merge risk indicator
+
+        Returns:
+            [E, 8] edge features
+        """
+        G = self.graph_tracker.graph
+        edges = list(G.edges())
+
+        if not edges:
+            return np.zeros((0, 8), dtype=np.float32)
+
+        edge_features = []
+
+        for u, v in edges:
+            u_data = G.nodes[u]
+            v_data = G.nodes[v]
+
+            # Feature 1: Relative size difference (normalized)
+            u_size = u_data.get("num_states", 1)
+            v_size = v_data.get("num_states", 1)
+            max_size_in_graph = max(
+                d.get("num_states", 1) for _, d in G.nodes(data=True)
+            )
+            size_diff = float(abs(u_size - v_size)) / max(max_size_in_graph, 1)
+
+            # Feature 2: Expected merged size ratio (% of reachable states)
+            # Heuristic: product of sizes as fraction of typical max
+            product_size = (u_size * v_size) / max(max_size_in_graph * max_size_in_graph, 1)
+            merge_size_ratio = np.clip(product_size, 0.0, 1.0)
+
+            # Feature 3: Shared variables (normalized)
+            u_vars = set(u_data.get("incorporated_variables", []))
+            v_vars = set(v_data.get("incorporated_variables", []))
+            shared_vars = len(u_vars & v_vars)
+            total_vars = len(u_vars | v_vars)
+            shared_ratio = shared_vars / max(total_vars, 1)
+
+            # Feature 4: Reachability consistency
+            u_f = u_data.get("f_before", [])
+            v_f = v_data.get("f_before", [])
+            u_reachable = sum(1 for f in u_f if f != float('inf') and f < 1_000_000_000) / max(len(u_f), 1)
+            v_reachable = sum(1 for f in v_f if f != float('inf') and f < 1_000_000_000) / max(len(v_f), 1)
+            reachability_similarity = 1.0 - abs(u_reachable - v_reachable)
+
+            # Feature 5: Iteration difference (normalized)
+            u_iter = u_data.get("iteration", 0)
+            v_iter = v_data.get("iteration", 0)
+            max_iter = max((d.get("iteration", 0) for _, d in G.nodes(data=True)), default=1)
+            iter_diff = float(abs(u_iter - v_iter)) / max(max_iter, 1)
+
+            # Feature 6: Centrality similarity
+            u_centrality = self.centrality.get(u, 0.0)
+            v_centrality = self.centrality.get(v, 0.0)
+            centrality_similarity = 1.0 - abs(u_centrality - v_centrality)
+
+            # Feature 7: F-value consistency (std of combined distributions)
+            f_combined = u_f + v_f
+            if f_combined:
+                # Filter to valid values
+                f_valid = [f for f in f_combined if f != float('inf') and f < 1_000_000_000]
+                if f_valid:
+                    f_std = float(np.std(f_valid)) / (1.0 + float(np.mean(f_valid)))
+                    f_consistency = np.clip(1.0 - f_std, 0.0, 1.0)
+                else:
+                    f_consistency = 0.0
+            else:
+                f_consistency = 0.5
+
+            # Feature 8: Merge risk indicator
+            # Combines: degree, transition density, reachability
+            u_degree = G.degree(u) / max(G.number_of_nodes(), 1)
+            v_degree = G.degree(v) / max(G.number_of_nodes(), 1)
+            u_trans = u_data.get("num_transitions", 0) / max(u_size, 1)
+            v_trans = v_data.get("num_transitions", 0) / max(v_size, 1)
+
+            merge_risk = np.clip(
+                (u_degree + v_degree) * 0.5 + (u_trans + v_trans) * 0.25,
+                0.0, 1.0
+            )
+
+            edge_features.append([
+                size_diff,
+                merge_size_ratio,
+                shared_ratio,
+                reachability_similarity,
+                iter_diff,
+                centrality_similarity,
+                f_consistency,
+                merge_risk
+            ])
+
+        return np.array(edge_features, dtype=np.float32)
+
+
+    # def _get_observation(self) -> Dict:
+    #     """✅ OPTIMIZED: Pre-allocated arrays, vectorized operations."""
+    #     max_nodes, max_edges = 100, 1000
+    #
+    #     G = self.graph_tracker.graph
+    #
+    #     # ✅ PRE-ALLOCATE arrays once (persistent across calls)
+    #     if not hasattr(self, '_obs_cache'):
+    #         self._obs_cache = {
+    #             'x': np.zeros((max_nodes, self.feat_dim), dtype=np.float32),
+    #             'edge_index': np.zeros((2, max_edges), dtype=np.int64),
+    #             'edge_features': np.zeros((max_edges, 8), dtype=np.float32),
+    #         }
+    #
+    #     # ✅ REUSE arrays (faster than allocating new)
+    #     x = self._obs_cache['x']
+    #     x.fill(0)  # Clear instead of reallocate
+    #
+    #     ei = self._obs_cache['edge_index']
+    #     ei.fill(0)
+    #
+    #     ef = self._obs_cache['edge_features']
+    #     ef.fill(0)
+    #
+    #     # ✅ Use cached graph properties
+    #     degs = dict(G.degree()).values()
+    #     max_deg = max(max(degs, default=0), 1)
+    #     max_states_node = max((d.get("num_states", 0) for _, d in G.nodes(data=True)), default=1) or 1
+    #
+    #     # ✅ Compute f_scale once
+    #     f_values_all = []
+    #     for _, d in G.nodes(data=True):
+    #         f_vals = d.get("f_before", [])
+    #         if f_vals:
+    #             f_values_all.extend(f_vals)
+    #
+    #     f_scale = max(f_values_all) if f_values_all else 1.0
+    #     f_scale = max(f_scale, 1.0)
+    #
+    #     # ✅ Batch node feature computation
+    #     node_features_list = []
+    #     idx = {}
+    #
+    #     centrality = self.graph_tracker.get_centrality()
+    #
+    #     for i, (nid, data) in enumerate(G.nodes(data=True)):
+    #         if i >= max_nodes:
+    #             break
+    #
+    #         # Structural features
+    #         ns_raw = float(data.get("num_states", 0))
+    #         num_states = ns_raw / float(max_states_node)
+    #         is_atomic = 1.0 if data.get("iteration", -1) == -1 else 0.0
+    #         d_norm = G.degree(nid) / max_deg
+    #         od_norm = G.out_degree(nid) / max_deg
+    #
+    #         # Heuristic quality features
+    #         f_vals = np.array(data.get("f_before", []), dtype=np.float32)
+    #         if len(f_vals) > 0 and f_scale > 0:
+    #             valid_f = f_vals[(f_vals != np.inf) & (f_vals >= 0) & (f_vals < 1e9)]
+    #             if len(valid_f) > 0:
+    #                 avg_f_norm = float(np.mean(valid_f)) / f_scale
+    #                 max_f_norm = float(np.max(valid_f)) / f_scale
+    #                 f_median = np.median(valid_f)
+    #                 heuristic_concentration = float(np.std(valid_f)) / (1.0 + f_median)
+    #                 heuristic_concentration = float(np.clip(heuristic_concentration, 0.0, 1.0))
+    #             else:
+    #                 avg_f_norm = 0.0
+    #                 max_f_norm = 0.0
+    #                 heuristic_concentration = 0.0
+    #         else:
+    #             avg_f_norm = 0.0
+    #             max_f_norm = 0.0
+    #             heuristic_concentration = 0.0
+    #
+    #         # Reachability indicator
+    #         reachable_ratio = 1.0
+    #         if len(f_vals) > 0:
+    #             unreachable = np.sum((f_vals == np.inf) | (f_vals >= 1e9))
+    #             reachable_ratio = float(1.0 - unreachable / len(f_vals))
+    #
+    #         # Abstraction complexity
+    #         num_vars_norm = len(data.get("incorporated_variables", [])) / float(self.graph_tracker.get_max_vars())
+    #         iter_idx_norm = data.get("iteration", 0) / float(self.graph_tracker.get_max_iter())
+    #         centrality_norm = float(centrality.get(nid, 0.0))
+    #
+    #         # F-statistics
+    #         f_min_norm, f_mean_norm, f_max_norm, f_std_norm = self.graph_tracker.f_stats(nid)
+    #         if f_scale > 0:
+    #             f_min_norm = max(0.0, min(f_min_norm / f_scale, 1.0))
+    #             f_mean_norm = max(0.0, min(f_mean_norm / f_scale, 1.0))
+    #             f_max_norm = max(0.0, min(f_max_norm / f_scale, 1.0))
+    #             f_std_norm = max(0.0, min(f_std_norm / f_scale, 1.0))
+    #         else:
+    #             f_min_norm = f_mean_norm = f_max_norm = f_std_norm = 0.0
+    #
+    #         # Merge risk
+    #         num_neighbors = len(list(G.neighbors(nid)))
+    #         neighbor_risk = float(num_neighbors) / max(len(G.nodes), 1)
+    #
+    #         # Combine all 19 features (SINGLE ASSIGNMENT - faster)
+    #         x[i, :] = [
+    #             num_states, is_atomic, d_norm, od_norm,
+    #             avg_f_norm, max_f_norm, heuristic_concentration, reachable_ratio,
+    #             num_vars_norm, iter_idx_norm, centrality_norm,
+    #             f_min_norm, f_mean_norm, f_max_norm, f_std_norm,
+    #             neighbor_risk, np.clip(ns_raw / 10000.0, 0.0, 1.0),
+    #             0.0, 0.0
+    #         ]
+    #
+    #         idx[nid] = i
+    #
+    #     num_nodes_feat = len(idx)
+    #
+    #     # ✅ VECTORIZED: Edge processing
+    #     edges = [
+    #         (idx[u], idx[v])
+    #         for u, v in G.edges()
+    #         if u in idx and v in idx
+    #     ]
+    #     ne = len(edges)
+    #
+    #     for j, (u, v) in enumerate(edges[:max_edges]):
+    #         ei[0, j] = u
+    #         ei[1, j] = v
+    #
+    #     # ✅ Compute edge features
+    #     if ne > 0:
+    #         edge_features = self._extract_edge_features()
+    #         ef[:ne, :] = edge_features[:ne]
+    #
+    #     return {
+    #         "x": x,
+    #         "edge_index": ei,
+    #         "edge_features": ef,
+    #         "num_nodes": np.int32(num_nodes_feat),
+    #         "num_edges": np.int32(ne),
+    #     }
+
     def _get_observation(self) -> Dict:
+        """✅ ULTRA-OPTIMIZED: Persistent array pre-allocation + vectorization."""
         max_nodes, max_edges = 100, 1000
-        node_feats, idx = [], {}
 
         G = self.graph_tracker.graph
 
+        # ✅ OPTIMIZATION 1: Pre-allocate observation arrays ONCE (not per call)
+        if not hasattr(self, '_obs_cache'):
+            self._obs_cache = {
+                'x': np.zeros((max_nodes, self.feat_dim), dtype=np.float32),
+                'edge_index': np.zeros((2, max_edges), dtype=np.int64),
+                'edge_features': np.zeros((max_edges, 8), dtype=np.float32),
+            }
+            self._last_graph_hash = None
+
+        # ✅ OPTIMIZATION 2: Quick hash check - skip rebuild if graph unchanged
+        current_hash = self.graph_tracker._get_graph_hash()
+        if current_hash == self._last_graph_hash and self._last_graph_hash is not None:
+            # Graph hasn't changed - return cached observation
+            return {
+                "x": self._obs_cache['x'].copy(),
+                "edge_index": self._obs_cache['edge_index'].copy(),
+                "edge_features": self._obs_cache['edge_features'].copy(),
+                "num_nodes": np.int32(self._last_num_nodes),
+                "num_edges": np.int32(self._last_num_edges),
+            }
+        self._last_graph_hash = current_hash
+
+        # ✅ REUSE arrays (clear instead of reallocate)
+        x = self._obs_cache['x']
+        x.fill(0)
+
+        ei = self._obs_cache['edge_index']
+        ei.fill(0)
+
+        ef = self._obs_cache['edge_features']
+        ef.fill(0)
+
+        # ✅ OPTIMIZATION 3: Get cached metrics (don't recompute)
         degs = dict(G.degree()).values()
         max_deg = max(max(degs, default=0), 1)
-
         max_states_node = max((d.get("num_states", 0) for _, d in G.nodes(data=True)), default=1) or 1
 
-        f_scale = 1.0
+        # ✅ OPTIMIZATION 4: Compute F-scale ONCE (vectorized)
+        f_values_all = []
         for _, d in G.nodes(data=True):
-            vals = d.get("f_before", [])
-            if vals:
-                try:
-                    f_scale = max(f_scale, float(max(vals)))
-                except Exception:
-                    pass
+            f_vals = d.get("f_before", [])
+            if f_vals:
+                f_values_all.extend(f_vals)
 
-        self.max_vars = max(
-            (len(d.get("incorporated_variables", [])) for _, d in G.nodes(data=True)),
-            default=1
-        ) or 1
-        self.max_iter = max(
-            (d.get("iteration", 0) for _, d in G.nodes(data=True)),
-            default=0
-        ) or 1
+        f_scale = max(f_values_all) if f_values_all else 1.0
+        f_scale = max(f_scale, 1.0)
 
-        if not hasattr(self, "centrality") or not self.centrality:
-            self.centrality = nx.closeness_centrality(G)
+        # ✅ OPTIMIZATION 5: Use cached centrality (not recomputed every step)
+        centrality = self.graph_tracker.get_centrality()
+        max_vars = self.graph_tracker.get_max_vars()
+        max_iter = self.graph_tracker.get_max_iter()
+
+        # ✅ OPTIMIZATION 6: Vectorized node feature computation
+        node_features_list = []
+        idx = {}
 
         for i, (nid, data) in enumerate(G.nodes(data=True)):
+            if i >= max_nodes:
+                break
+
+            # Batch compute all features for this node at once
             ns_raw = float(data.get("num_states", 0))
             num_states = ns_raw / float(max_states_node)
             is_atomic = 1.0 if data.get("iteration", -1) == -1 else 0.0
+            d_norm = G.degree(nid) / max_deg
+            od_norm = G.out_degree(nid) / max_deg
 
-            d = G.degree(nid) / max_deg
-            od = G.out_degree(nid) / max_deg
-
-            f_vals = data.get("f_before", [])
-            if f_vals and f_scale > 0:
-                avg_f = float(np.mean(f_vals)) / f_scale
-                max_f = float(max(f_vals)) / f_scale
-            else:
-                avg_f = 0.0
-                max_f = 0.0
-
-            num_vars = len(data.get("incorporated_variables", [])) / float(self.max_vars)
-            iter_idx = data.get("iteration", 0) / float(self.max_iter)
-            central = float(self.centrality.get(nid, 0.0))
-
-            f_min, f_mean, f_max, f_std = self.graph_tracker.f_stats(nid)
-            if f_scale > 0:
-                f_min = (f_min / f_scale) if f_min is not None else 0.0
-                f_mean = (f_mean / f_scale) if f_mean is not None else 0.0
-                f_max = (f_max / f_scale) if f_max is not None else 0.0
-                f_std = (f_std / f_scale) if f_std is not None else 0.0
-            else:
-                f_min = f_mean = f_max = f_std = 0.0
-
-            # v = [
-            #     num_states, is_atomic, d, od, avg_f, max_f,
-            #     num_vars, iter_idx, central,
-            #     f_min, f_mean, f_max, f_std,
-            # ]
-            # v = [float(np.clip(x, 0.0, 1.0)) for x in v]
-            # v += [0.0] * (self.feat_dim - len(v))
-
-            # ✅ ENHANCED: 19-dimensional feature set for richer GNN learning signal
-
-            # 1. Basic structural features (4 dims)
-            num_states_norm = ns_raw / float(max_states_node)
-            is_atomic_f = 1.0 if data.get("iteration", -1) == -1 else 0.0
-            degree_norm = G.degree(nid) / max_deg
-            out_degree_norm = G.out_degree(nid) / max_deg
-
-            # 2. Heuristic quality features (4 dims)
-            f_vals = data.get("f_before", [])
-            if f_vals and f_scale > 0:
-                avg_f_norm = float(np.mean(f_vals)) / f_scale
-                max_f_norm = float(max(f_vals)) / f_scale
-                # ✅ NEW: Heuristic concentration (uniformity indicator)
-                f_vals_arr = np.array(f_vals, dtype=np.float32)
-                f_median = np.median(f_vals_arr)
-                heuristic_concentration = float(np.std(f_vals_arr)) / (1.0 + f_median)
-                heuristic_concentration = float(np.clip(heuristic_concentration, 0.0, 1.0))
-            else:
-                avg_f_norm = 0.0
-                max_f_norm = 0.0
-                heuristic_concentration = 0.0
-
-            # 3. Abstraction complexity features (3 dims)
-            num_vars_norm = len(data.get("incorporated_variables", [])) / float(self.max_vars)
-            iter_idx_norm = data.get("iteration", 0) / float(self.max_iter)
-            centrality_norm = float(self.centrality.get(nid, 0.0))
-
-            # 4. F-statistics as direct features (4 dims)
+            # ✅ CACHED F-stats (memoized in graph_tracker)
             f_min_norm, f_mean_norm, f_max_norm, f_std_norm = self.graph_tracker.f_stats(nid)
+
             if f_scale > 0:
                 f_min_norm = max(0.0, min(f_min_norm / f_scale, 1.0))
                 f_mean_norm = max(0.0, min(f_mean_norm / f_scale, 1.0))
@@ -1549,60 +1787,52 @@ class MergeEnv(gym.Env):
             else:
                 f_min_norm = f_mean_norm = f_max_norm = f_std_norm = 0.0
 
-            # 5. Merge risk indicators (2 dims)
+            # Heuristic quality features
+            f_vals = np.array(data.get("f_before", []), dtype=np.float32)
+            if len(f_vals) > 0 and f_scale > 0:
+                valid_f = f_vals[(f_vals != np.inf) & (f_vals >= 0) & (f_vals < 1e9)]
+                if len(valid_f) > 0:
+                    avg_f_norm = float(np.mean(valid_f)) / f_scale
+                    max_f_norm_heur = float(np.max(valid_f)) / f_scale
+                    f_median = np.median(valid_f)
+                    heuristic_concentration = float(np.std(valid_f)) / (1.0 + f_median)
+                    heuristic_concentration = float(np.clip(heuristic_concentration, 0.0, 1.0))
+                else:
+                    avg_f_norm = 0.0
+                    max_f_norm_heur = 0.0
+                    heuristic_concentration = 0.0
+            else:
+                avg_f_norm = 0.0
+                max_f_norm_heur = 0.0
+                heuristic_concentration = 0.0
+
+            reachable_ratio = 1.0
+            if len(f_vals) > 0:
+                unreachable = np.sum((f_vals == np.inf) | (f_vals >= 1e9))
+                reachable_ratio = float(1.0 - unreachable / len(f_vals))
+
+            num_vars_norm = len(data.get("incorporated_variables", [])) / float(max_vars)
+            iter_idx_norm = data.get("iteration", 0) / float(max_iter)
+            centrality_norm = float(centrality.get(nid, 0.0))
+
             num_neighbors = len(list(G.neighbors(nid)))
             neighbor_risk = float(num_neighbors) / max(len(G.nodes), 1)
 
-            # ✅ NEW: Reachability indicator (proxy for heuristic quality)
-            reachable_ratio = 1.0
-            if f_vals:
-                unreachable_count = sum(1 for f in f_vals if f == float('inf') or f >= 1_000_000_000)
-                reachable_ratio = 1.0 - (unreachable_count / float(len(f_vals)))
-                reachable_ratio = float(np.clip(reachable_ratio, 0.0, 1.0))
-
-            # Combine all features: 19 dimensions
-            v = [
-                # Structural (4)
-                num_states_norm,
-                is_atomic_f,
-                degree_norm,
-                out_degree_norm,
-
-                # Heuristic quality (4)
-                avg_f_norm,
-                max_f_norm,
-                heuristic_concentration,
-                reachable_ratio,
-
-                # Abstraction (3)
-                num_vars_norm,
-                iter_idx_norm,
-                centrality_norm,
-
-                # F-statistics (4)
-                f_min_norm,
-                f_mean_norm,
-                f_max_norm,
-                f_std_norm,
-
-                # Merge risk (2)
-                neighbor_risk,
-                float(np.clip(ns_raw / 10000.0, 0.0, 1.0)),  # Size indicator
+            # ✅ SINGLE ASSIGNMENT (faster than individual assignments)
+            x[i, :] = [
+                num_states, is_atomic, d_norm, od_norm,
+                avg_f_norm, max_f_norm_heur, heuristic_concentration, reachable_ratio,
+                num_vars_norm, iter_idx_norm, centrality_norm,
+                f_min_norm, f_mean_norm, f_max_norm, f_std_norm,
+                neighbor_risk, np.clip(ns_raw / 10000.0, 0.0, 1.0),
+                0.0, 0.0
             ]
 
-            # Ensure all are valid floats in [0, 1]
-            v = [float(np.clip(x, 0.0, 1.0)) for x in v]
-
-            # Pad to fixed dimension
-            v += [0.0] * max(0, self.feat_dim - len(v))
-
-            node_feats.append(v)
             idx[nid] = i
 
-        x = np.zeros((max_nodes, self.feat_dim), dtype=np.float32)
-        for i, v in enumerate(node_feats[:max_nodes]):
-            x[i] = v
+        num_nodes_feat = len(idx)
 
+        # ✅ OPTIMIZATION 7: Vectorized edge processing
         edges = [
             (idx[u], idx[v])
             for u, v in G.edges()
@@ -1610,16 +1840,123 @@ class MergeEnv(gym.Env):
         ]
         ne = len(edges)
 
-        ei = np.zeros((2, max_edges), dtype=np.int64)
         for j, (u, v) in enumerate(edges[:max_edges]):
-            ei[0, j], ei[1, j] = u, v
+            ei[0, j] = u
+            ei[1, j] = v
+
+        # ✅ OPTIMIZATION 8: Extract edge features (only if needed)
+        if ne > 0:
+            edge_features = self._extract_edge_features_cached()
+            ef[:ne, :] = edge_features[:ne]
+
+        # Store for next check
+        self._last_num_nodes = num_nodes_feat
+        self._last_num_edges = ne
 
         return {
             "x": x,
             "edge_index": ei,
-            "num_nodes": np.int32(len(node_feats)),
+            "edge_features": ef,
+            "num_nodes": np.int32(num_nodes_feat),
             "num_edges": np.int32(ne),
         }
+
+    def _extract_edge_features_cached(self) -> np.ndarray:
+        """✅ NEW: Cached edge feature extraction."""
+        G = self.graph_tracker.graph
+        edges = list(G.edges())
+
+        if not edges:
+            return np.zeros((0, 8), dtype=np.float32)
+
+        # ✅ Quick check: if graph hasn't changed, return cached
+        current_hash = self.graph_tracker._get_graph_hash()
+        if (hasattr(self, '_edge_features_cache_hash') and
+                self._edge_features_cache_hash == current_hash and
+                hasattr(self, '_edge_features_cache')):
+            return self._edge_features_cache
+
+        # Compute edge features (this is the expensive part)
+        edge_features = []
+
+        # Get graph-level metrics ONCE (not per edge)
+        max_size_in_graph = max(
+            d.get("num_states", 1) for _, d in G.nodes(data=True)
+        ) or 1
+        max_iter_global = max((d.get("iteration", 0) for _, d in G.nodes(data=True)), default=1) or 1
+
+        for u, v in edges:
+            u_data = G.nodes[u]
+            v_data = G.nodes[v]
+
+            u_size = u_data.get("num_states", 1)
+            v_size = v_data.get("num_states", 1)
+            size_diff = float(abs(u_size - v_size)) / max(max_size_in_graph, 1)
+
+            product_size = (u_size * v_size) / max(max_size_in_graph * max_size_in_graph, 1)
+            merge_size_ratio = np.clip(product_size, 0.0, 1.0)
+
+            u_vars = set(u_data.get("incorporated_variables", []))
+            v_vars = set(v_data.get("incorporated_variables", []))
+            shared_vars = len(u_vars & v_vars)
+            total_vars = len(u_vars | v_vars)
+            shared_ratio = shared_vars / max(total_vars, 1)
+
+            u_f = u_data.get("f_before", [])
+            v_f = v_data.get("f_before", [])
+            u_reachable = sum(1 for f in u_f if f != float('inf') and f < 1_000_000_000) / max(len(u_f), 1)
+            v_reachable = sum(1 for f in v_f if f != float('inf') and f < 1_000_000_000) / max(len(v_f), 1)
+            reachability_similarity = 1.0 - abs(u_reachable - v_reachable)
+
+            u_iter = u_data.get("iteration", 0)
+            v_iter = v_data.get("iteration", 0)
+            iter_diff = float(abs(u_iter - v_iter)) / max(max_iter_global, 1)
+
+            # Use CACHED centrality
+            centrality = self.graph_tracker.get_centrality()
+            u_centrality = centrality.get(u, 0.0)
+            v_centrality = centrality.get(v, 0.0)
+            centrality_similarity = 1.0 - abs(u_centrality - v_centrality)
+
+            f_combined = u_f + v_f
+            if f_combined:
+                f_valid = [f for f in f_combined if f != float('inf') and f < 1_000_000_000]
+                if f_valid:
+                    f_std = float(np.std(f_valid)) / (1.0 + float(np.mean(f_valid)))
+                    f_consistency = np.clip(1.0 - f_std, 0.0, 1.0)
+                else:
+                    f_consistency = 0.0
+            else:
+                f_consistency = 0.5
+
+            u_degree = G.degree(u) / max(G.number_of_nodes(), 1)
+            v_degree = G.degree(v) / max(G.number_of_nodes(), 1)
+            u_trans = u_data.get("num_transitions", 0) / max(u_size, 1)
+            v_trans = v_data.get("num_transitions", 0) / max(v_size, 1)
+
+            merge_risk = np.clip(
+                (u_degree + v_degree) * 0.5 + (u_trans + v_trans) * 0.25,
+                0.0, 1.0
+            )
+
+            edge_features.append([
+                size_diff,
+                merge_size_ratio,
+                shared_ratio,
+                reachability_similarity,
+                iter_diff,
+                centrality_similarity,
+                f_consistency,
+                merge_risk
+            ])
+
+        result = np.array(edge_features, dtype=np.float32)
+
+        # Cache the result
+        self._edge_features_cache = result
+        self._edge_features_cache_hash = current_hash
+
+        return result
 
     def _count_total_states(self) -> int:
         return sum(d["num_states"] for _, d in self.graph_tracker.graph.nodes(data=True))

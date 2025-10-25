@@ -17,12 +17,11 @@ class DefaultMergePolicy:
         return sum(d.get("num_states", 0) for _, d in tracker.graph.nodes(data=True))
 
     def predict(self, observation: dict, deterministic: bool = True) -> tuple[np.ndarray, None]:
-        """Predicts the best action by choosing smallest state explosion."""
+        """✅ OPTIMIZED: Lightweight feature extraction for baseline."""
         graph_tracker = self.env.graph_tracker
         if not graph_tracker or not graph_tracker.graph.edges:
             return np.array([0], dtype=np.int64), None
 
-        # Get the list of currently valid edges
         edges = list(graph_tracker.graph.edges)
         if not edges:
             return np.array([0], dtype=np.int64), None
@@ -30,12 +29,14 @@ class DefaultMergePolicy:
         best_action_index = 0
         min_resulting_states = float('inf')
 
+        # ✅ SIMPLIFIED: Only use state counts (not full feature extraction)
         for i, (u, v) in enumerate(edges):
             try:
-                # Simulate WITHOUT deep copy (too slow)
-                # Instead, just use heuristic: prefer merging smaller systems
+                # Simple heuristic: prefer merging smaller systems
                 u_states = graph_tracker.graph.nodes[u].get("num_states", 0)
                 v_states = graph_tracker.graph.nodes[v].get("num_states", 0)
+
+                # Quick estimate: product size
                 resulting_states = u_states * v_states
 
                 if resulting_states < min_resulting_states:
