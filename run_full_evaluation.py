@@ -1,44 +1,27 @@
-# !/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-END-TO-END EVALUATION ORCHESTRATOR
-==================================
-Master script that runs comprehensive evaluation: baselines + GNN + analysis.
+END-TO-END EVALUATION ORCHESTRATOR - ENHANCED
+==============================================
+Master script that seamlessly integrates experiments and evaluation.
 
-This is the primary interface for evaluating your GNN model against baselines.
-
-Usage:
-    python run_all_evaluation.py \
+Usage for Standalone Evaluation:
+    python run_full_evaluation.py \
         --model mvp_output/gnn_model.zip \
         --domain domain.pddl \
         --problems "problem_small_*.pddl" \
         --output evaluation_results/ \
         --timeout 300
 
-Features:
-  ✓ Single entry point for all evaluation
-  ✓ Automatic input validation
-  ✓ Progressive execution with checkpointing
-  ✓ Comprehensive error handling
-  ✓ Final report generation
-  ✓ Result visualization
+Usage for Experiment Analysis:
+    python run_full_evaluation.py \
+        --analyze-experiments \
+        --experiments overfit_experiment_results \
+                      problem_generalization_results \
+                      scale_generalization_results \
+                      curriculum_learning_results \
+        --output evaluation_results/
 
-Output Structure:
-    evaluation_results/
-    ├── evaluation_results.csv        # Detailed per-problem results
-    ├── evaluation_summary.json        # Aggregate statistics
-    ├── comparison_report.txt          # Human-readable comparison
-    ├── evaluation.log                 # Full debug log
-    ├── plots/
-    │   ├── solve_rate_comparison.png
-    │   ├── time_comparison.png
-    │   ├── expansions_comparison.png
-    │   ├── efficiency_frontier.png
-    │   ├── per_problem_comparison.png
-    │   ├── statistical_analysis.png
-    │   └── summary_dashboard.html
-    └── checkpoints/
-        └── evaluation_checkpoint.json # Resume point
 """
 
 import sys
@@ -51,7 +34,6 @@ from pathlib import Path
 from datetime import datetime
 import time
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)-8s - %(message)s',
@@ -86,7 +68,6 @@ class EvaluationValidator:
             logger.warning(f"Model file does not end with .zip: {model_path}")
 
         try:
-            # Try to read as ZIP to verify it's a valid model file
             import zipfile
             with zipfile.ZipFile(model_path, 'r') as z:
                 if 'data' not in z.namelist() and 'policy.optimizer_states' not in z.namelist():
@@ -111,7 +92,6 @@ class EvaluationValidator:
         if not domain_path.endswith('.pddl'):
             logger.warning(f"Domain file does not end with .pddl: {domain_path}")
 
-        # Minimal syntax check
         try:
             with open(domain_path, 'r') as f:
                 content = f.read()
@@ -140,7 +120,6 @@ class EvaluationValidator:
 
         logger.info(f"✓ Found {len(problems)} problem(s) matching pattern")
 
-        # Validate first few
         for prob in problems[:min(3, len(problems))]:
             if not prob.endswith('.pddl'):
                 logger.warning(f"Problem file does not end with .pddl: {prob}")
@@ -161,7 +140,6 @@ class EvaluationValidator:
         try:
             os.makedirs(output_dir, exist_ok=True)
 
-            # Try to write a test file
             test_file = os.path.join(output_dir, ".write_test")
             with open(test_file, 'w') as f:
                 f.write("test")
@@ -175,10 +153,31 @@ class EvaluationValidator:
             return False
 
     @staticmethod
-    def validate_all(model_path: str, domain_path: str, problem_pattern: str, output_dir: str) -> bool:
-        """Run all validations."""
+    def validate_experiment_dirs(experiment_dirs: list) -> bool:
+        """Check that experiment directories exist."""
+        if not experiment_dirs:
+            logger.error("No experiment directories provided")
+            return False
+
+        for exp_dir in experiment_dirs:
+            if not os.path.exists(exp_dir):
+                logger.error(f"Experiment directory not found: {exp_dir}")
+                return False
+
+            results_file = os.path.join(exp_dir, "results.json")
+            if not os.path.exists(results_file):
+                logger.error(f"Results file not found: {results_file}")
+                return False
+
+            logger.info(f"✓ Experiment directory validated: {exp_dir}")
+
+        return True
+
+    @staticmethod
+    def validate_all_standalone(model_path: str, domain_path: str, problem_pattern: str, output_dir: str) -> bool:
+        """Run all validations for standalone evaluation."""
         logger.info("\n" + "=" * 80)
-        logger.info("STAGE 0: INPUT VALIDATION")
+        logger.info("STAGE 0: INPUT VALIDATION (STANDALONE)")
         logger.info("=" * 80 + "\n")
 
         checks = [
@@ -197,7 +196,34 @@ class EvaluationValidator:
                 logger.error(f"✗ {name} validation failed: {e}")
                 results.append((name, False))
 
-        # Summary
+        passed = sum(1 for _, r in results if r)
+        total = len(results)
+
+        logger.info(f"\nValidation Summary: {passed}/{total} passed")
+
+        return all(r for _, r in results)
+
+    @staticmethod
+    def validate_all_experiment_analysis(experiment_dirs: list, output_dir: str) -> bool:
+        """Run all validations for experiment analysis."""
+        logger.info("\n" + "=" * 80)
+        logger.info("STAGE 0: INPUT VALIDATION (EXPERIMENT ANALYSIS)")
+        logger.info("=" * 80 + "\n")
+
+        checks = [
+            ("Experiment directories", lambda: EvaluationValidator.validate_experiment_dirs(experiment_dirs)),
+            ("Output directory", lambda: EvaluationValidator.validate_output_dir(output_dir)),
+        ]
+
+        results = []
+        for name, check in checks:
+            try:
+                result = check()
+                results.append((name, result))
+            except Exception as e:
+                logger.error(f"✗ {name} validation failed: {e}")
+                results.append((name, False))
+
         passed = sum(1 for _, r in results if r)
         total = len(results)
 
@@ -207,16 +233,60 @@ class EvaluationValidator:
 
 
 # ============================================================================
+# STAGE 2: RUN ANALYSIS ON EXPERIMENT RESULTS
+# ============================================================================
+
+def run_experiment_analysis(
+    experiment_dirs: list,
+    output_dir: str
+) -> bool:
+    """Analyze results from completed experiments."""
+
+    logger.info("\n" + "=" * 80)
+    logger.info("STAGE 1: ANALYZING EXPERIMENT RESULTS")
+    logger.info("=" * 80 + "\n")
+
+    try:
+        cmd = [
+            "python", "analysis_and_visualization.py",
+            "--experiments"
+        ] + experiment_dirs + [
+            "--output", os.path.join(output_dir, "plots")
+        ]
+
+        logger.info(f"Running command: {' '.join(cmd)}\n")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=False,
+            text=True
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Analysis failed with code {result.returncode}")
+            return False
+
+        logger.info("\n✅ Analysis completed")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to run analysis: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+# ============================================================================
 # STAGE 2: RUN COMPREHENSIVE EVALUATION
 # ============================================================================
 
 def run_comprehensive_evaluation(
-        model_path: str,
-        domain_path: str,
-        problem_pattern: str,
-        output_dir: str,
-        timeout: int,
-        skip_baselines: bool
+    model_path: str,
+    domain_path: str,
+    problem_pattern: str,
+    output_dir: str,
+    timeout: int,
+    skip_baselines: bool
 ) -> bool:
     """Execute comprehensive evaluation framework."""
 
@@ -264,8 +334,8 @@ def run_comprehensive_evaluation(
 # ============================================================================
 
 def run_analysis_and_visualization(
-        results_csv: str,
-        output_dir: str
+    results_csv: str,
+    output_dir: str
 ) -> bool:
     """Execute analysis and visualization framework."""
 
@@ -274,7 +344,6 @@ def run_analysis_and_visualization(
     logger.info("=" * 80 + "\n")
 
     try:
-        # Check if CSV exists
         if not os.path.exists(results_csv):
             logger.warning(f"Results CSV not found: {results_csv}")
             logger.warning("Skipping analysis and visualization")
@@ -324,7 +393,6 @@ def generate_final_report(output_dir: str) -> bool:
     try:
         report_path = os.path.join(output_dir, "EVALUATION_REPORT.txt")
 
-        # CORRECTED LINE
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write("=" * 90 + "\n")
             f.write("GNN MERGE STRATEGY - COMPREHENSIVE EVALUATION REPORT\n")
@@ -332,13 +400,11 @@ def generate_final_report(output_dir: str) -> bool:
 
             f.write(f"Timestamp: {datetime.now().isoformat()}\n\n")
 
-            # Overview
             f.write("EVALUATION OVERVIEW\n")
             f.write("-" * 90 + "\n")
             f.write("This report contains the complete evaluation of the trained GNN policy\n")
             f.write("against baseline Fast Downward planners on a test set of problems.\n\n")
 
-            # Key Files
             f.write("KEY FILES\n")
             f.write("-" * 90 + "\n")
             f.write(f"  Detailed results:     evaluation_results.csv\n")
@@ -346,7 +412,6 @@ def generate_final_report(output_dir: str) -> bool:
             f.write(f"  Comparison report:    comparison_report.txt\n")
             f.write(f"  Plots directory:      plots/\n\n")
 
-            # How to View Results
             f.write("HOW TO INTERPRET RESULTS\n")
             f.write("-" * 90 + "\n")
             f.write("1. SOLVE RATE: Percentage of problems solved by each planner\n")
@@ -364,7 +429,6 @@ def generate_final_report(output_dir: str) -> bool:
             f.write("5. EFFICIENCY FRONTIER: Trade-off between time and expansions\n")
             f.write("   - Curves closer to origin are better.\n\n")
 
-            # Next Steps
             f.write("NEXT STEPS\n")
             f.write("-" * 90 + "\n")
             f.write("1. Review the comparison_report.txt for baseline performance\n")
@@ -372,7 +436,6 @@ def generate_final_report(output_dir: str) -> bool:
             f.write("3. Analyze per_problem_comparison.png for problem-specific insights\n")
             f.write("4. Review evaluation_summary.json for detailed statistics\n\n")
 
-            # Recommendations
             f.write("INTERPRETATION GUIDELINES\n")
             f.write("-" * 90 + "\n")
             f.write("✅ EXCELLENT: GNN solves >= 90% of problems with time comparable to LM-Cut\n")
@@ -384,7 +447,6 @@ def generate_final_report(output_dir: str) -> bool:
 
         logger.info(f"✅ Final report written: {report_path}")
 
-        # Print summary
         logger.info("\n" + "=" * 90)
         logger.info("EVALUATION COMPLETE")
         logger.info("=" * 90 + "\n")
@@ -419,100 +481,141 @@ def main():
         epilog="""
 Examples:
 
-  # Basic evaluation
-  python run_all_evaluation.py \\
+  # Standalone evaluation
+  python run_full_evaluation.py \\
       --model mvp_output/gnn_model.zip \\
       --domain domain.pddl \\
       --problems "problem_small_*.pddl" \\
       --output evaluation_results/
-      
+
+  # Analyze completed experiments
+  python run_full_evaluation.py \\
+      --analyze-experiments \\
+      --experiments overfit_experiment_results \\
+                    problem_generalization_results \\
+                    scale_generalization_results \\
+                    curriculum_learning_results \\
+      --output evaluation_results/
 
   # Skip baselines (faster)
-  python run_all_evaluation.py \\
+  python run_full_evaluation.py \\
       --model mvp_output/gnn_model.zip \\
       --domain domain.pddl \\
       --problems "problem_small_*.pddl" \\
       --output evaluation_results/ \\
       --skip-baselines
-
-  # Longer timeout
-  python run_all_evaluation.py \\
-      --model mvp_output/gnn_model.zip \\
-      --domain domain.pddl \\
-      --problems "problem_*.pddl" \\
-      --output evaluation_results/ \\
-      --timeout 600
         """
     )
 
     parser.add_argument(
-        "--model", required=True,
+        "--analyze-experiments",
+        action="store_true",
+        help="Analyze results from completed experiments instead of running new evaluation"
+    )
+
+    parser.add_argument(
+        "--model",
         help="Path to trained GNN model (ZIP file)"
     )
+
     parser.add_argument(
-        "--domain", required=True,
+        "--domain",
         help="Path to domain PDDL file"
     )
+
     parser.add_argument(
-        "--problems", required=True,
+        "--problems",
         help="Glob pattern for problem PDDL files"
     )
+
     parser.add_argument(
-        "--output", default="evaluation_results",
+        "--experiments",
+        nargs='+',
+        help="Experiment directories to analyze (used with --analyze-experiments)"
+    )
+
+    parser.add_argument(
+        "--output",
+        default="evaluation_results",
         help="Output directory for results (default: evaluation_results)"
     )
+
     parser.add_argument(
-        "--timeout", type=int, default=300,
+        "--timeout",
+        type=int,
+        default=300,
         help="Timeout per problem in seconds (default: 300)"
     )
+
     parser.add_argument(
-        "--skip-baselines", action="store_true",
+        "--skip-baselines",
+        action="store_true",
         help="Skip baseline evaluation (faster, GNN only)"
     )
 
     args = parser.parse_args()
 
     # ====================================================================
-    # STAGE 0: VALIDATION
+    # EXPERIMENT ANALYSIS MODE
     # ====================================================================
 
-    if not EvaluationValidator.validate_all(
-            args.model,
-            args.domain,
-            args.problems,
+    if args.analyze_experiments:
+        if not args.experiments:
+            logger.error("--experiments required when using --analyze-experiments")
+            return 1
+
+        if not EvaluationValidator.validate_all_experiment_analysis(
+            args.experiments,
             args.output
+        ):
+            logger.error("\n❌ INPUT VALIDATION FAILED")
+            return 1
+
+        if not run_experiment_analysis(args.experiments, args.output):
+            logger.error("\n❌ EXPERIMENT ANALYSIS FAILED")
+            return 1
+
+        if not generate_final_report(args.output):
+            logger.error("\n❌ FINAL REPORT GENERATION FAILED")
+            return 1
+
+        logger.info("✅ EXPERIMENT ANALYSIS PIPELINE COMPLETE\n")
+        return 0
+
+    # ====================================================================
+    # STANDALONE EVALUATION MODE
+    # ====================================================================
+
+    if not args.model or not args.domain or not args.problems:
+        logger.error("--model, --domain, and --problems are required for standalone evaluation")
+        parser.print_help()
+        return 1
+
+    if not EvaluationValidator.validate_all_standalone(
+        args.model,
+        args.domain,
+        args.problems,
+        args.output
     ):
         logger.error("\n❌ INPUT VALIDATION FAILED")
         logger.error("Please check your inputs and try again")
         return 1
 
-    # ====================================================================
-    # STAGE 1: COMPREHENSIVE EVALUATION
-    # ====================================================================
-
     if not run_comprehensive_evaluation(
-            args.model,
-            args.domain,
-            args.problems,
-            args.output,
-            args.timeout,
-            args.skip_baselines
+        args.model,
+        args.domain,
+        args.problems,
+        args.output,
+        args.timeout,
+        args.skip_baselines
     ):
         logger.error("\n❌ COMPREHENSIVE EVALUATION FAILED")
         return 1
-
-    # ====================================================================
-    # STAGE 2: ANALYSIS AND VISUALIZATION
-    # ====================================================================
 
     results_csv = os.path.join(args.output, "evaluation_results.csv")
 
     if not run_analysis_and_visualization(results_csv, args.output):
         logger.warning("\n⚠️ ANALYSIS AND VISUALIZATION FAILED (continuing anyway)")
-
-    # ====================================================================
-    # STAGE 3: FINAL REPORT
-    # ====================================================================
 
     if not generate_final_report(args.output):
         logger.error("\n❌ FINAL REPORT GENERATION FAILED")

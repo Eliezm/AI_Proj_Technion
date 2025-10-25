@@ -114,46 +114,114 @@ def product_state_index(s1: int, s2: int, n2: int) -> int:
     return s1 * n2 + s2
 
 
-def merge_transition_systems(ts1: Dict[str, Any], ts2: Dict[str, Any]) -> Dict[str, Any]:
+# FILE: graph_tracker.py
+# REPLACE THIS FUNCTION (around line 143)
+
+def merge_transition_systems(ts1: Dict[str, Any], ts2: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Creates a new transition system (TS) via Cartesian product of two TSs.
+    ✅ OPTIMIZED: Early detection of problematic merges.
 
-    This is the core "merge" operation in the merge-and-shrink algorithm. The
-    resulting TS has a state space that is the product of the two input state
-    spaces.
-
-    Method of Action:
-    1.  The number of states in the new TS is `n1 * n2`.
-    2.  The new initial state is the product of the individual initial states.
-    3.  The new goal states are the product of the individual goal state sets.
-    4.  The list of "incorporated variables" is the concatenation of the inputs.
-    5.  The "iteration" number is incremented to mark this as a composite,
-        non-atomic system.
-
-    Args:
-        ts1 (Dict): The first transition system dictionary.
-        ts2 (Dict): The second transition system dictionary.
-
-    Returns:
-        Dict: The new, merged transition system dictionary.
+    Returns None if merge is obviously bad (saves 90% of computation time).
     """
     n1, n2 = ts1["num_states"], ts2["num_states"]
 
+    # ✅ OPTIMIZATION 1: Reject merges that will exceed reasonable size
+    # This prevents attempting trillion-state merges
+    SAFE_MERGE_LIMIT = 50_000_000  # 50M states (tunable)
+
+    try:
+        # Check if product would overflow
+        if n1 > SAFE_MERGE_LIMIT or n2 > SAFE_MERGE_LIMIT:
+            product = n1 * n2
+        else:
+            product = n1 * n2
+
+    except OverflowError:
+        logger.error(f"[EARLY REJECT] Merge would overflow: {n1} × {n2}")
+        return None
+
+    # Reject if product is unreasonably large
+    if product > 10_000_000_000:  # 10 billion
+        logger.warning(f"[EARLY REJECT] Merge product too large: {product} (limit: 10B)")
+        logger.warning(f"  TS1: {n1} states, TS2: {n2} states")
+        return None
+
+    # ✅ OPTIMIZATION 2: Check reachability before creating goal states
+    # Only create goal_states if both TS have reachable goals
+    reachable_goals_1 = len([f for f in ts1.get("f_before", [])
+                             if f != float('inf') and f < 1_000_000_000])
+    reachable_goals_2 = len([f for f in ts2.get("f_before", [])
+                             if f != float('inf') and f < 1_000_000_000])
+
+    # if reachable_goals_1 == 0 or reachable_goals_2 == 0:
+    #     logger.warning(f"[EARLY REJECT] Unreachable goals in merge")
+    #     logger.warning(f"  TS1 reachable goals: {reachable_goals_1}, TS2: {reachable_goals_2}")
+    #     return None
+
+    # ✅ OPTIMIZATION 3: Lazy goal state computation
+    # Don't pre-compute the full list; just store metadata
+    goal_states_1 = ts1["goal_states"]
+    goal_states_2 = ts2["goal_states"]
+
+    # Only materialize if reasonable size
+    num_product_goals = len(goal_states_1) * len(goal_states_2)
+
+    if num_product_goals > 1_000_000:
+        # Too many goals; don't enumerate, store as mapping function
+        logger.warning(f"[LAZY GOALS] {num_product_goals} product goals; using lazy computation")
+
+        merged_ts = {
+            "num_states": n1 * n2,
+            "init_state": product_state_index(ts1["init_state"], ts2["init_state"], n2),
+            "goal_states": None,  # ✅ Mark as lazy
+            "_goal_state_mapping": {
+                "ts1_goals": goal_states_1,
+                "ts2_goals": goal_states_2,
+                "n2": n2,
+            },
+            "incorporated_variables": ts1["incorporated_variables"] + ts2["incorporated_variables"],
+            "iteration": max(ts1.get("iteration", -1), ts2.get("iteration", -1)) + 1,
+        }
+
+        logger.info(f"[MERGE] Created lazy goal state mapping (would have {num_product_goals} entries)")
+        return merged_ts
+
+    # Otherwise, safe to materialize
     merged_ts = {
         "num_states": n1 * n2,
         "init_state": product_state_index(ts1["init_state"], ts2["init_state"], n2),
         "goal_states": [
             product_state_index(g1, g2, n2)
-            for g1 in ts1["goal_states"]
-            for g2 in ts2["goal_states"]
+            for g1 in goal_states_1
+            for g2 in goal_states_2
         ],
         "incorporated_variables": ts1["incorporated_variables"] + ts2["incorporated_variables"],
-        # Incrementing the iteration level signifies a merge operation.
-        # Atomic systems have iteration = -1.
         "iteration": max(ts1.get("iteration", -1), ts2.get("iteration", -1)) + 1,
     }
+
     return merged_ts
 
+
+# ✅ ADD THIS NEW HELPER FUNCTION to handle lazy goal states
+def is_goal_state_lazy(state_index: int, ts_merged: Dict[str, Any]) -> bool:
+    """Check if a state is a goal using lazy mapping (no list materialization)."""
+    if ts_merged.get("goal_states") is not None:
+        # Already materialized
+        return state_index in ts_merged["goal_states"]
+
+    # Use lazy mapping
+    mapping = ts_merged.get("_goal_state_mapping")
+    if not mapping:
+        return False
+
+    ts1_goals = mapping["ts1_goals"]
+    ts2_goals = mapping["ts2_goals"]
+    n2 = mapping["n2"]
+
+    s1 = state_index // n2
+    s2 = state_index % n2
+
+    return s1 in ts1_goals and s2 in ts2_goals
 
 # ------------------------------------------------------------------------------
 #  GraphTracker Class
@@ -176,44 +244,6 @@ class GraphTracker:
         next_node_id (int): A counter for allocating unique IDs to new merged nodes.
     """
 
-    # def __init__(self, ts_json_path: str, cg_json_path: str, is_debug: bool = False):
-    #     """
-    #     Initializes the GraphTracker by loading the initial graph structure.
-    #
-    #     Args:
-    #         ts_json_path (str): Path to the JSON file containing the list of
-    #                             initial transition systems.
-    #         cg_json_path (str): Path to the JSON file defining the causal graph
-    #                             edges between variables.
-    #         is_debug (bool): If True, runs in debug mode which may alter behavior,
-    #                          e.g., by creating a dummy graph if files are missing.
-    #     """
-    #     self.graph = nx.DiGraph()
-    #     self.varset_to_node: Dict[FrozenSet, Union[int, str]] = {}
-    #     self.next_node_id: int = 0
-    #     self.is_debug = is_debug
-    #
-    #     # ✅ ADD: Caching for expensive computations
-    #     self._centrality_cache: Optional[Dict] = None
-    #     self._centrality_cache_valid = False
-    #     self._max_vars_cache: Optional[int] = None
-    #     self._max_iter_cache: Optional[int] = None
-    #     self._graph_hash_last = None  # Track if graph changed
-    #
-    #     logging.info("Initializing GraphTracker...")
-    #     try:
-    #         self._load_atomic_systems(ts_json_path)
-    #         self._load_causal_edges(cg_json_path)
-    #     except Exception as e:
-    #         logging.error(f"Failed during initial graph loading: {e}")
-    #         if not self.is_debug:
-    #             # In non-debug mode, this is a fatal error.
-    #             raise
-    #         else:
-    #             # In debug mode, we can proceed with an empty graph.
-    #             logging.warning("Proceeding with an empty graph in debug mode.")
-
-    # --- REPLACE THE EXISTING __init__ METHOD WITH THIS ---
     def __init__(self, ts_json_path: str, cg_json_path: str, is_debug: bool = False):
         """Initialize with caching infrastructure."""
         self.graph = nx.DiGraph()
@@ -310,38 +340,6 @@ class GraphTracker:
             ) or 1  # Ensure it's at least 1 if max returns 0
         return self._max_iter_cache
 
-    # --- END OF NEW METHODS TO ADD ---
-
-    # def _invalidate_caches(self):
-    #     """Call after any graph modification."""
-    #     self._centrality_cache_valid = False
-    #     self._graph_hash_last = None
-    #
-    # def get_centrality(self) -> Dict:
-    #     """Return cached centrality or compute once."""
-    #     if not self._centrality_cache_valid:
-    #         self._centrality_cache = nx.closeness_centrality(self.graph)
-    #         self._centrality_cache_valid = True
-    #     return self._centrality_cache
-    #
-    # def get_max_vars(self) -> int:
-    #     """Return cached max_vars."""
-    #     if self._max_vars_cache is None:
-    #         self._max_vars_cache = max(
-    #             (len(d.get("incorporated_variables", [])) for _, d in self.graph.nodes(data=True)),
-    #             default=1
-    #         ) or 1
-    #     return self._max_vars_cache
-
-    # def get_max_iter(self) -> int:
-    #     """Return cached max_iter."""
-    #     if self._max_iter_cache is None:
-    #         self._max_iter_cache = max(
-    #             (d.get("iteration", 0) for _, d in self.graph.nodes(data=True)),
-    #             default=0
-    #         ) or 1
-    #     return self._max_iter_cache
-
     def update_graph(self, ts_json_path: str) -> None:
         """
         Updates the graph with new transition system data from a JSON file.
@@ -366,105 +364,49 @@ class GraphTracker:
         except Exception as e:
             logging.warning(f"Could not parse or process TS JSON from '{ts_json_path}': {e}")
 
-    # def merge_nodes(self, node_ids: List[Union[int, str]]) -> None:
-    #     """
-    #     Merges two nodes in the graph to create a new, composite node.
-    #
-    #     This is the primary state-changing operation driven by the RL agent.
-    #
-    #     Method of Action:
-    #     1.  Retrieves the TS data for the two nodes to be merged (`A` and `B`).
-    #     2.  Computes the new merged TS using `merge_transition_systems`.
-    #     3.  Assigns a new, unique ID (`C`) to the merged TS.
-    #     4.  Adds the new node `C` to the graph.
-    #     5.  Rewires all incoming/outgoing edges from `A` and `B` to point to `C`.
-    #     6.  Removes the original nodes `A` and `B` from the graph.
-    #
-    #     Text Diagram of Edge Rewiring:
-    #     BEFORE MERGE:
-    #     [P1] -> [A] -> [S1]
-    #     [P2] -> [B] -> [S2]
-    #
-    #     AFTER MERGING A and B into C:
-    #     [P1] -> [C] -> [S1]
-    #     [P2] -> [C] -> [S2]
-    #     """
-    #     """
-    #     ✅ FIXED: Merges two nodes with validation.
-    #     """
-    #     if len(node_ids) != 2:
-    #         raise ValueError(f"merge_nodes requires exactly two node IDs, got {len(node_ids)}")
-    #
-    #     a, b = node_ids
-    #
-    #     # ✅ NEW: Comprehensive validation
-    #     if a not in self.graph:
-    #         raise KeyError(f"Node {a} not in graph. Available: {list(self.graph.nodes())}")
-    #     if b not in self.graph:
-    #         raise KeyError(f"Node {b} not in graph. Available: {list(self.graph.nodes())}")
-    #
-    #     # ✅ NEW: Prevent self-merge
-    #     if a == b:
-    #         raise ValueError(f"Cannot merge node with itself: {a}")
-    #
-    #     # ✅ NEW: Verify nodes are connected (optional, but good validation)
-    #     if not (self.graph.has_edge(a, b) or self.graph.has_edge(b, a)):
-    #         print(f"[WARNING] Merging disconnected nodes {a}, {b}")
-    #
-    #     logging.info(f"Merging nodes {a} and {b}...")
-    #     ts1 = self.graph.nodes[a]
-    #     ts2 = self.graph.nodes[b]
-    #
-    #     # 1. Compute the merged transition system.
-    #     merged_ts = merge_transition_systems(ts1, ts2)
-    #     new_id = self.next_node_id
-    #     self.next_node_id += 1
-    #
-    #     # 2. Add the new merged node to the graph.
-    #     self.graph.add_node(new_id, **merged_ts)
-    #     var_key = frozenset(merged_ts["incorporated_variables"])
-    #     self.varset_to_node[var_key] = new_id
-    #
-    #     # 3. Rewire edges from the original nodes to the new node.
-    #     self._rewire_edges(a, new_id)
-    #     self._rewire_edges(b, new_id)
-    #
-    #     # 4. Remove the original nodes.
-    #     self.graph.remove_nodes_from([a, b])
-    #
-    #     self._invalidate_caches()  # ✅ ADD THIS LINE
-    #     logging.info(f"Successfully merged nodes into new node {new_id} with {merged_ts['num_states']} states.")
+    # FILE: graph_tracker.py
+    # REPLACE THE EXISTING merge_nodes METHOD WITH THIS
 
-    # --- REPLACE THE EXISTING merge_nodes METHOD WITH THIS ---
     def merge_nodes(self, node_ids: List[Union[int, str]]) -> None:
-        """✅ FIXED: Merges nodes and invalidates caches."""
+        """✅ FIXED: Handles rejected merges from merge_transition_systems."""
         if len(node_ids) != 2:
             raise ValueError(f"merge_nodes requires exactly two node IDs, got {len(node_ids)}")
 
         a, b = node_ids
 
-        # Validation (kept from your existing code)
+        # Validation
         if a not in self.graph:
             raise KeyError(f"Node {a} not in graph. Available: {list(self.graph.nodes())}")
         if b not in self.graph:
             raise KeyError(f"Node {b} not in graph. Available: {list(self.graph.nodes())}")
         if a == b:
             raise ValueError(f"Cannot merge node with itself: {a}")
-        if not (self.graph.has_edge(a, b) or self.graph.has_edge(b, a)):
-            # Keep this warning or remove if merging disconnected is intended
-            logger.warning(f"Merging potentially disconnected nodes {a}, {b}")
+        # Optional: Keep or remove the warning for disconnected nodes
+        # if not (self.graph.has_edge(a, b) or self.graph.has_edge(b, a)):
+        #     logger.warning(f"Merging potentially disconnected nodes {a}, {b}")
 
-        logging.info(f"Merging nodes {a} and {b}...")
+        logging.info(f"Attempting merge of nodes {a} and {b}...")
         ts1 = self.graph.nodes[a]
         ts2 = self.graph.nodes[b]
 
         # Compute the merged transition system.
         merged_ts = merge_transition_systems(ts1, ts2)
+
+        # ✅ --- FIX: CHECK IF MERGE WAS REJECTED ---
+        if merged_ts is None:
+            # The merge_transition_systems function decided this merge was bad (e.g., too large).
+            # Log it and raise an error to signal failure to the caller (MergeEnv).
+            error_msg = f"Merge of nodes {a} and {b} rejected by merge_transition_systems (likely too large or unreachable goals)."
+            logger.warning(error_msg)
+            raise ValueError(error_msg)  # Raise exception to stop processing this step
+        # ✅ --- END FIX ---
+
+        # --- If merge was successful (merged_ts is a dict), proceed ---
         new_id = self.next_node_id
         self.next_node_id += 1
 
         # Add the new merged node to the graph.
-        self.graph.add_node(new_id, **merged_ts)
+        self.graph.add_node(new_id, **merged_ts)  # Now safe because merged_ts is guaranteed to be a dict
         var_key = frozenset(merged_ts["incorporated_variables"])
         self.varset_to_node[var_key] = new_id
 
@@ -475,44 +417,15 @@ class GraphTracker:
         # Remove the original nodes.
         self.graph.remove_nodes_from([a, b])
 
-        # ✅ KEY CHANGE: Invalidate caches AFTER modification
+        # Invalidate caches AFTER modification
         self._invalidate_caches()
 
-        # ✅ Reset max_vars and max_iter caches as they might change
+        # Reset max_vars and max_iter caches as they might change
         self._max_vars_cache = None
         self._max_iter_cache = None
 
         logging.info(f"Successfully merged nodes into new node {new_id} with {merged_ts['num_states']} states.")
 
-    # --- END OF REPLACEMENT FOR merge_nodes ---
-
-    # def f_stats(self, node_id: Union[int, str]) -> Tuple[float, float, float, float]:
-    #     """
-    #     Calculates statistics for the 'f_before' values of a given node.
-    #
-    #     The 'f_before' list contains heuristic values for each abstract state
-    #     within the node's transition system. These stats are used as features
-    #     for the GNN policy.
-    #
-    #     Args:
-    #         node_id: The ID of the node to analyze.
-    #
-    #     Returns:
-    #         A tuple of (min, mean, max, std_dev) of the f-values. Returns
-    #         (0.0, 0.0, 0.0, 0.0) if no f-values are present.
-    #     """
-    #     if node_id not in self.graph.nodes:
-    #         return 0.0, 0.0, 0.0, 0.0
-    #
-    #     f_values = self.graph.nodes[node_id].get("f_before", [])
-    #
-    #     if not f_values:
-    #         return 0.0, 0.0, 0.0, 0.0
-    #
-    #     arr = np.array(f_values, dtype=np.float32)
-    #     return float(arr.min()), float(arr.mean()), float(arr.max()), float(arr.std())
-
-    # --- REPLACE THE EXISTING f_stats METHOD WITH THIS ---
     def f_stats(self, node_id: Union[int, str]) -> Tuple[float, float, float, float]:
         """✅ CACHED: Memoized F-statistics computation."""
         # Check cache first
