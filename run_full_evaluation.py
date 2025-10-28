@@ -487,6 +487,9 @@ Examples:
       --domain domain.pddl \\
       --problems "problem_small_*.pddl" \\
       --output evaluation_results/
+      
+python run_full_evaluation.py --model mvp_output/gnn_model.zip --domain blocksworld.pddl --problems "blocksworld-*.pddl" --output evaluation_results/
+
 
   # Analyze completed experiments
   python run_full_evaluation.py \\

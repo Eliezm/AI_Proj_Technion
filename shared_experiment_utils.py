@@ -26,6 +26,10 @@ from datetime import datetime
 import numpy as np
 from dataclasses import dataclass, asdict
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 sys.path.insert(0, os.getcwd())
 os.makedirs("downward/gnn_output", exist_ok=True)
 os.makedirs("downward/fd_output", exist_ok=True)
@@ -407,6 +411,135 @@ def load_benchmarks_by_difficulty(
         logger.info(f"  {difficulty:<10}: {len(benchmarks_list)} problems")
 
     return all_benchmarks
+
+
+# === ADD TO shared_experiment_utils.py ===
+
+def load_and_validate_benchmarks(
+        benchmark_dir: str = "benchmarks",
+        timeout_per_problem: int = 480,  # 8 minutes
+        logger: Optional[logging.Logger] = None
+) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Load and validate benchmarks from directory structure.
+
+    Expected structure:
+        benchmarks/
+        ├── blocksworld/
+        │   ├── small/
+        │   │   ├── domain.pddl
+        │   │   ├── problem_small_00.pddl
+        │   │   └── ...
+        │   ├── medium/
+        │   └── large/
+        ├── logistics/
+        └── parking/
+
+    Returns:
+        Dict mapping (domain, size) -> list of (domain_file, problem_file) tuples
+    """
+    if logger is None:
+        logger = logging.getLogger("benchmark_loader")
+
+    import glob
+
+    logger.info(f"Loading benchmarks from: {benchmark_dir}")
+
+    benchmarks = {}
+
+    for domain_dir in glob.glob(os.path.join(benchmark_dir, "*")):
+        if not os.path.isdir(domain_dir):
+            continue
+
+        domain_name = os.path.basename(domain_dir)
+
+        for size_dir in glob.glob(os.path.join(domain_dir, "*")):
+            if not os.path.isdir(size_dir):
+                continue
+
+            size_name = os.path.basename(size_dir)
+
+            domain_file = os.path.join(size_dir, "domain.pddl")
+            if not os.path.exists(domain_file):
+                logger.warning(f"Domain file not found: {domain_file}")
+                continue
+
+            problems = sorted(glob.glob(os.path.join(size_dir, "problem_*.pddl")))
+
+            if not problems:
+                logger.warning(f"No problems found in: {size_dir}")
+                continue
+
+            key = f"{domain_name}_{size_name}"
+            benchmarks[key] = [
+                (os.path.abspath(domain_file), os.path.abspath(p))
+                for p in problems
+            ]
+
+            logger.info(f"  {key}: {len(benchmarks[key])} problems")
+
+    logger.info(f"\n✅ Loaded {sum(len(v) for v in benchmarks.values())} total problems")
+
+    return benchmarks
+
+
+# ADD THIS TO shared_experiment_utils.py after load_and_validate_benchmarks()
+
+def filter_benchmarks_by_size(
+        all_benchmarks: Dict[str, List[Tuple[str, str]]],
+        sizes: List[str]
+) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    Filter benchmarks to only include specified sizes.
+
+    Args:
+        all_benchmarks: Dict from load_and_validate_benchmarks()
+        sizes: List of sizes like ["small", "medium", "large"]
+
+    Returns:
+        Filtered benchmarks dict with only matching keys
+    """
+    filtered = {}
+    for key, benchmarks in all_benchmarks.items():
+        # key format: "domain_size" e.g., "blocksworld_small"
+        for size in sizes:
+            if key.endswith(f"_{size}"):
+                filtered[key] = benchmarks
+                break
+
+    logger.info(f"Filtered benchmarks by size {sizes}: {len(filtered)} domain-size combinations")
+    return filtered
+
+
+def get_benchmarks_for_sizes(
+        all_benchmarks: Dict[str, List[Tuple[str, str]]],
+        sizes: List[str],
+        max_problems_per_combination: int = None
+) -> List[Tuple[str, str]]:
+    """
+    Get flattened list of benchmarks for specified sizes.
+
+    Args:
+        all_benchmarks: Dict from load_and_validate_benchmarks()
+        sizes: List of sizes like ["small", "medium"]
+        max_problems_per_combination: Max problems per domain-size combo
+
+    Returns:
+        Flattened list of (domain_file, problem_file) tuples
+    """
+    benchmarks_list = []
+
+    for key, benchmarks in all_benchmarks.items():
+        for size in sizes:
+            if key.endswith(f"_{size}"):
+                if max_problems_per_combination:
+                    benchmarks_list.extend(benchmarks[:max_problems_per_combination])
+                else:
+                    benchmarks_list.extend(benchmarks)
+                break
+
+    logger.info(f"Collected {len(benchmarks_list)} benchmarks for sizes {sizes}")
+    return benchmarks_list
 
 
 # ============================================================================

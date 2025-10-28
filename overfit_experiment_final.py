@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OVERFIT EXPERIMENT - PRODUCTION VERSION
-=======================================
+OVERFIT EXPERIMENT - PRODUCTION VERSION (REFACTORED)
+====================================================
 Train on a fixed set of problems from ONE domain.
 Test on the SAME problems to measure overfitting.
 
-This experiment verifies that the GNN can learn to specialize on a problem set.
+Compatible with new benchmark format.
 
 Usage:
     python overfit_experiment_final.py
@@ -28,7 +28,9 @@ from shared_experiment_utils import (
     setup_logging, print_section, print_subsection,
     ExperimentCheckpoint, train_gnn_model, evaluate_model_on_problems,
     save_results_to_json, save_results_to_txt, ensure_directories_exist,
-    get_timestamp_str, format_duration
+    get_timestamp_str, format_duration,
+    load_and_validate_benchmarks,  # ✅ NEW
+    get_benchmarks_for_sizes  # ✅ NEW
 )
 
 import time
@@ -41,26 +43,18 @@ import time
 class OverfitExperimentConfig:
     """Configuration for overfit experiment."""
 
-    # Experiment name
     EXPERIMENT_NAME = "overfit_experiment"
-
-    # Output directory
     OUTPUT_DIR = "overfit_experiment_results"
 
-    # Dataset
-    DOMAIN_FILE = "benchmarks/small/domain.pddl"
-    PROBLEM_PATTERN = "benchmarks/small/problem_*.pddl"
+    # ✅ REFACTORED: Use new benchmark format
+    BENCHMARK_DIR = "benchmarks"  # New structure: domain/size/
+    SIZES = ["small"]  # Only use small problems
     NUM_PROBLEMS = 5  # Use only 5 problems for overfitting
 
-    # Training
     REWARD_VARIANT = "astar_search"
     TOTAL_TIMESTEPS = 2000
     TIMESTEPS_PER_PROBLEM = 500
-
-    # Evaluation
     NUM_EVAL_RUNS_PER_PROBLEM = 3
-
-    # Seeding
     RANDOM_SEED = 42
 
 
@@ -71,7 +65,6 @@ class OverfitExperimentConfig:
 def run_overfit_experiment():
     """Run the complete overfit experiment with checkpoint/resume support."""
 
-    # Setup
     ensure_directories_exist()
     os.makedirs(OverfitExperimentConfig.OUTPUT_DIR, exist_ok=True)
 
@@ -85,41 +78,58 @@ def run_overfit_experiment():
     print_section("OVERFIT EXPERIMENT", logger)
 
     logger.info("Configuration:")
-    logger.info(f"  Domain: {OverfitExperimentConfig.DOMAIN_FILE}")
-    logger.info(f"  Problems: {OverfitExperimentConfig.NUM_PROBLEMS}")
+    logger.info(f"  Benchmark directory: {OverfitExperimentConfig.BENCHMARK_DIR}")
+    logger.info(f"  Sizes: {OverfitExperimentConfig.SIZES}")
+    logger.info(f"  Max problems: {OverfitExperimentConfig.NUM_PROBLEMS}")
     logger.info(f"  Total timesteps: {OverfitExperimentConfig.TOTAL_TIMESTEPS}")
     logger.info(f"  Reward variant: {OverfitExperimentConfig.REWARD_VARIANT}\n")
 
     try:
         # ====================================================================
-        # PHASE 1: SELECT PROBLEMS
+        # PHASE 1: LOAD BENCHMARKS USING NEW FORMAT
         # ====================================================================
 
-        print_subsection("PHASE 1: SELECT TRAINING PROBLEMS", logger)
+        print_subsection("PHASE 1: LOAD BENCHMARKS (NEW FORMAT)", logger)
 
-        # Load all problems
-        all_problems = sorted(glob.glob(OverfitExperimentConfig.PROBLEM_PATTERN))
+        all_benchmarks = load_and_validate_benchmarks(
+            benchmark_dir=OverfitExperimentConfig.BENCHMARK_DIR,
+            logger=logger
+        )
 
-        if not all_problems:
-            raise ValueError(f"No problems found: {OverfitExperimentConfig.PROBLEM_PATTERN}")
+        if not all_benchmarks:
+            logger.error("No benchmarks loaded!")
+            return 1
 
-        # Select subset
+        # ====================================================================
+        # PHASE 2: SELECT PROBLEMS BY SIZE
+        # ====================================================================
+
+        print_subsection("PHASE 2: SELECT TRAINING PROBLEMS", logger)
+
+        benchmarks = get_benchmarks_for_sizes(
+            all_benchmarks,
+            sizes=OverfitExperimentConfig.SIZES,
+            max_problems_per_combination=OverfitExperimentConfig.NUM_PROBLEMS
+        )
+
+        if not benchmarks:
+            logger.error("No benchmarks found for selected sizes!")
+            return 1
+
+        # Limit to NUM_PROBLEMS
         random.seed(OverfitExperimentConfig.RANDOM_SEED)
-        selected = random.sample(all_problems, min(OverfitExperimentConfig.NUM_PROBLEMS, len(all_problems)))
+        selected = random.sample(benchmarks, min(len(benchmarks), OverfitExperimentConfig.NUM_PROBLEMS))
         selected = sorted(selected)
 
-        domain_file = os.path.abspath(OverfitExperimentConfig.DOMAIN_FILE)
-        benchmarks = [(domain_file, os.path.abspath(p)) for p in selected]
-
-        logger.info(f"Selected {len(benchmarks)} problems:")
-        for i, (_, prob) in enumerate(benchmarks, 1):
+        logger.info(f"Selected {len(selected)} problems:")
+        for i, (_, prob) in enumerate(selected, 1):
             logger.info(f"  {i}. {os.path.basename(prob)}")
 
         # ====================================================================
-        # PHASE 2: TRAIN MODEL
+        # PHASE 3: TRAIN MODEL
         # ====================================================================
 
-        print_subsection("PHASE 2: TRAINING", logger)
+        print_subsection("PHASE 3: TRAINING", logger)
 
         checkpoint = checkpoint_manager.load()
 
@@ -133,7 +143,7 @@ def run_overfit_experiment():
             train_start = time.time()
 
             model_path = train_gnn_model(
-                benchmarks=benchmarks,
+                benchmarks=selected,
                 reward_variant=OverfitExperimentConfig.REWARD_VARIANT,
                 total_timesteps=OverfitExperimentConfig.TOTAL_TIMESTEPS,
                 timesteps_per_problem=OverfitExperimentConfig.TIMESTEPS_PER_PROBLEM,
@@ -153,23 +163,22 @@ def run_overfit_experiment():
 
             logger.info(f"\n✅ Training complete ({format_duration(train_elapsed)})")
 
-            # Save checkpoint
             checkpoint_manager.save({
                 'model_path': model_path,
                 'phase': 'training_complete',
             })
 
         # ====================================================================
-        # PHASE 3: EVALUATE ON TRAINING PROBLEMS
+        # PHASE 4: EVALUATE ON TRAINING PROBLEMS
         # ====================================================================
 
-        print_subsection("PHASE 3: EVALUATION ON TRAINING SET", logger)
+        print_subsection("PHASE 4: EVALUATION ON TRAINING SET", logger)
 
         eval_start = time.time()
 
         eval_results = evaluate_model_on_problems(
             model_path=model_path,
-            benchmarks=benchmarks,
+            benchmarks=selected,
             reward_variant=OverfitExperimentConfig.REWARD_VARIANT,
             logger=logger
         )
@@ -179,17 +188,18 @@ def run_overfit_experiment():
         logger.info(f"\n✅ Evaluation complete ({format_duration(eval_elapsed)})")
 
         # ====================================================================
-        # PHASE 4: COMPILE RESULTS
+        # PHASE 5: COMPILE RESULTS
         # ====================================================================
 
-        print_subsection("PHASE 4: RESULTS", logger)
+        print_subsection("PHASE 5: RESULTS", logger)
 
         results = {
             'experiment': OverfitExperimentConfig.EXPERIMENT_NAME,
             'timestamp': datetime.now().isoformat(),
             'configuration': {
-                'domain': OverfitExperimentConfig.DOMAIN_FILE,
-                'num_problems': len(benchmarks),
+                'benchmark_dir': OverfitExperimentConfig.BENCHMARK_DIR,
+                'sizes': OverfitExperimentConfig.SIZES,
+                'num_problems': len(selected),
                 'total_timesteps': OverfitExperimentConfig.TOTAL_TIMESTEPS,
                 'reward_variant': OverfitExperimentConfig.REWARD_VARIANT,
             },
@@ -212,7 +222,7 @@ def run_overfit_experiment():
         logger.info(f"  Solve Rate: {results['summary']['solve_rate']:.1f}%")
         logger.info(f"  Avg Reward: {results['summary']['avg_reward']:.4f}")
         logger.info(f"  Avg Time: {results['summary']['avg_time']:.2f}s")
-        logger.info(f"  Problems Solved: {results['summary']['problems_solved']}/{len(benchmarks)}")
+        logger.info(f"  Problems Solved: {results['summary']['problems_solved']}/{len(selected)}")
 
         # Save results
         json_path = os.path.join(OverfitExperimentConfig.OUTPUT_DIR, "results.json")
@@ -221,7 +231,6 @@ def run_overfit_experiment():
         save_results_to_json(results, json_path, logger)
         save_results_to_txt(results, txt_path, OverfitExperimentConfig.EXPERIMENT_NAME, logger)
 
-        # Clear checkpoint on success
         checkpoint_manager.clear()
 
         # Final summary
@@ -240,7 +249,6 @@ def run_overfit_experiment():
         logger.error(f"\n❌ Experiment failed: {e}")
         logger.error(traceback.format_exc())
 
-        # Save checkpoint on error (for resume)
         checkpoint_manager.save({
             'phase': 'failed',
             'error': str(e)

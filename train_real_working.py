@@ -121,7 +121,7 @@ def load_benchmarks_from_folders() -> Dict[str, List[Tuple[str, str]]]:
 
     logger.info(f"Benchmarks directory: {benchmarks_dir}\n")
 
-    difficulties = ["small", "medium", "large"]
+    difficulties = ["small", "medium", "large", "gen"]
     all_benchmarks = {}
 
     for difficulty in difficulties:
@@ -552,7 +552,7 @@ def main():
 
     # ✅ NEW: Get environment variables for multi-problem training
     reward_variant = os.environ.get('REWARD_VARIANT', 'astar_search')
-    difficulty = os.environ.get('DIFFICULTY', 'small').lower()
+    difficulty = os.environ.get('DIFFICULTY', 'gen').lower()
     max_problems = int(os.environ.get('MAX_PROBLEMS_PER_DIFFICULTY', '5'))
     curriculum_learning = os.environ.get('CURRICULUM_LEARNING', 'false').lower() == 'true'
 

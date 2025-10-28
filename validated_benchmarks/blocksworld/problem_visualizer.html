@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blocks World PDDL Visualizer</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Ensure consistent height for textareas */
+        .h-main {
+            height: calc(100vh - 200px);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="text-center mb-6">
+            <h1 class="text-4xl font-bold text-white">Blocks World PDDL Visualizer</h1>
+            <p class="text-lg text-gray-400 mt-2">Paste your PDDL problem file below to see the initial and goal states.</p>
+        </header>
+
+        <div class="mb-6">
+            <button id="visualizeButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition duration-300 ease-in-out transform hover:scale-105">
+                Visualize States
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <!-- Input Panel -->
+            <div>
+                <label for="pddlInput" class="block text-sm font-medium text-gray-300 mb-2">PDDL Problem File</label>
+                <textarea id="pddlInput"
+                    class="h-main w-full p-4 font-mono text-sm bg-gray-800 border border-gray-700 rounded-lg shadow-inner text-gray-200 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    placeholder="(:problem ...
+    (:domain blocksworld)
+    (:objects a b c - block)
+    (:init
+        (on-table a) (clear a)
+        (on-table b) (clear b)
+        (on c b) (clear c)
+        (arm-empty)
+    )
+    (:goal (and
+        (on a b)
+        (on b c)
+    ))
+)"></textarea>
+            </div>
+
+            <!-- Output Panel -->
+            <div>
+                <label for="output" class="block text-sm font-medium text-gray-300 mb-2">Text Visualization</label>
+                <textarea id="output"
+                    class="h-main w-full p-4 font-mono text-sm bg-gray-900 border border-gray-700 rounded-lg shadow-inner text-yellow-300 focus:outline-none readonly"
+                    readonly
+                    placeholder="Visualization will appear here..."></textarea>
+            </div>
+
+        </div>
+
+        <!-- Info Panel -->
+        <div class="mt-6 bg-gray-800 p-4 rounded-lg border border-gray-700">
+            <h3 class="font-semibold text-lg text-white mb-2">Diagram Key:</h3>
+            <pre class="font-mono text-gray-400 text-sm">
+[A]     <- Block 'A'
+[B]     <- Block 'B' on 'A'
+---     <- The Table
+(A)     <- Block 'A' held by arm</pre>
+        </div>
+
+    </div>
+
+    <script>
+        document.getElementById('visualizeButton').addEventListener('click', visualizePDDL);
+
+        /**
+         * Main function to trigger parsing and drawing.
+         */
+        function visualizePDDL() {
+            const pddlText = document.getElementById('pddlInput').value;
+            const outputArea = document.getElementById('output');
+
+            try {
+                // 1. Find all objects
+                const objectsRegex = /:objects\s+([^)]+)/i;
+                const objectsMatch = pddlText.match(objectsRegex);
+                let allBlocks = [];
+                if (objectsMatch) {
+                    // Remove ' - block' type declarations
+                    allBlocks = objectsMatch[1].replace(/-\s+[^\s]+/g, '').trim().split(/\s+/);
+                } else {
+                    throw new Error("Could not find '(:objects ...)' section.");
+                }
+
+                // 2. Parse Initial State
+                const initRegex = /:init\s+((?:[^)]+\)\s*)+)/i;
+                const initMatch = pddlText.match(initRegex);
+                if (!initMatch) throw new Error("Could not find '(:init ...)' section.");
+                const initState = parseState(initMatch[1], allBlocks);
+                const initDiagram = drawState(initState, "Initial State");
+
+                // 3. Parse Goal State
+                // Try to find (and ...) wrapper, but also work without it
+                const goalRegex = /:goal\s+\(and\s+((?:[^)]+\)\s*)+)\)/i;
+                let goalMatch = pddlText.match(goalRegex);
+                let goalText = '';
+
+                if (goalMatch) {
+                    goalText = goalMatch[1];
+                } else {
+                    // Fallback for simple :goal (predicate)
+                    const simpleGoalRegex = /:goal\s+(\([^)]+\))/i;
+                    const simpleGoalMatch = pddlText.match(simpleGoalRegex);
+                    if (simpleGoalMatch) {
+                        goalText = simpleGoalMatch[1];
+                    } else {
+                        // Fallback for :goal with multiple predicates but no 'and'
+                        const fallbackGoalRegex = /:goal\s+((?:[^)]+\)\s*)+)/i;
+                        const fallbackMatch = pddlText.match(fallbackGoalRegex);
+                        if(fallbackMatch) {
+                            goalText = fallbackMatch[1];
+                        } else {
+                            throw new Error("Could not parse '(:goal ...)' section.");
+                        }
+                    }
+                }
+
+                const goalState = parseState(goalText, allBlocks);
+                const goalDiagram = drawState(goalState, "Goal State");
+
+                // 4. Render output
+                outputArea.value = `${initDiagram}\n\n${goalDiagram}`;
+                outputArea.classList.remove('text-red-400');
+                outputArea.classList.add('text-yellow-300');
+
+            } catch (error) {
+                outputArea.classList.add('text-red-400');
+                outputArea.classList.remove('text-yellow-300');
+                outputArea.value = `Error: ${error.message}\n\nCheck your PDDL problem format.`;
+            }
+        }
+
+        /**
+         * Parses a block of PDDL predicates into a state object.
+         * @param {string} text - The string containing predicates, e.g., "(on a b) (on-table c)"
+         * @param {string[]} allBlocks - An array of all block names.
+         * @returns {object} A state object { onTable: Set, on: Map, holding: string|null, allBlocks: string[] }
+         */
+        function parseState(text, allBlocks) {
+            const onTable = new Set();
+            const on = new Map(); // block -> is on block
+            let holding = null;
+            let armEmpty = false;
+
+            // Define regex for predicates
+            const onTableRegex = /\(on-table\s+([^\s)]+)\)/g;
+            const onRegex = /\(on\s+([^\s)]+)\s+([^\s)]+)\)/g;
+            const holdingRegex = /\(holding\s+([^\s)]+)\)/g;
+            const armEmptyRegex = /\(arm-empty\)/g;
+
+            let match;
+            while ((match = onTableRegex.exec(text)) !== null) {
+                onTable.add(match[1]);
+            }
+            while ((match = onRegex.exec(text)) !== null) {
+                on.set(match[1], match[2]); // key 'a' is on value 'b'
+            }
+            while ((match = holdingRegex.exec(text)) !== null) {
+                holding = match[1];
+            }
+            if (armEmptyRegex.test(text)) {
+                armEmpty = true;
+            }
+
+            return { onTable, on, holding, armEmpty, allBlocks };
+        }
+
+        /**
+         * Draws a text diagram from a parsed state.
+         * @param {object} state - The state object from parseState.
+         * @param {string} title - The title for this diagram (e.g., "Initial State").
+         * @returns {string} The multi-line text diagram.
+         */
+        function drawState(state, title) {
+            const { onTable, on, holding, armEmpty, allBlocks } = state;
+            let outputLines = [];
+
+            outputLines.push(`${title}:`);
+
+            // --- 1. Draw Arm State ---
+            if (holding) {
+                outputLines.push(`        (${holding}) <-- ARM`);
+            } else if (armEmpty) {
+                outputLines.push(`         || <-- ARM (Empty)`);
+            }
+            outputLines.push(""); // spacer
+
+            // --- 2. Build Stack Data ---
+            const stacks = [];
+            // Find all blocks that are on the table
+            const baseBlocks = new Set(onTable);
+
+            // Also find bases of stacks that might be defined in goal (e.g., (on a b) (on b c))
+            // 'c' is the base, but might not be explicitly (on-table c) in a goal.
+            const allOnBlocks = new Set(on.keys()); // Blocks on top
+            const allUnderBlocks = new Set(on.values()); // Blocks underneath
+
+            allBlocks.forEach(block => {
+                if (!allOnBlocks.has(block) && !allUnderBlocks.has(block) && !holding) {
+                    // This is a solitary block on the table, not mentioned in 'on' or 'on-table'
+                    // Or it's a block on the table that wasn't explicitly in onTable (common in goals)
+                    if (!onTable.has(block)) {
+                        baseBlocks.add(block);
+                    }
+                }
+                if (allUnderBlocks.has(block) && !allOnBlocks.has(block)) {
+                    // This block is at the bottom of a stack
+                    baseBlocks.add(block);
+                }
+            });
+
+            // Build stacks up from the base
+            baseBlocks.forEach(base => {
+                let stack = [base];
+                let current = base;
+
+                // Find what's on top of 'current'
+                let blockOnTop = null;
+                while(true) {
+                    blockOnTop = null;
+                    // Inefficient, but clear
+                    for (const [top, bottom] of on.entries()) {
+                        if (bottom === current) {
+                            blockOnTop = top;
+                            break;
+                        }
+                    }
+
+                    if (blockOnTop) {
+                        stack.push(blockOnTop);
+                        current = blockOnTop;
+                    } else {
+                        break; // No more blocks on this stack
+                    }
+                }
+                stacks.push(stack);
+            });
+
+            // --- 3. Draw Stacks ---
+            const maxHeight = stacks.reduce((max, s) => Math.max(max, s.length), 0);
+            if (maxHeight === 0 && stacks.length === 0) {
+                 outputLines.push("(No blocks defined or all held)");
+            }
+
+            for (let i = maxHeight - 1; i >= 0; i--) {
+                let line = "";
+                stacks.forEach(stack => {
+                    if (i < stack.length) {
+                        // Center block name inside [ ]
+                        const block = stack[i];
+                        if (block.length === 1) {
+                            line += ` [${block}]  `;
+                        } else if (block.length === 2) {
+                            line += ` [${block}] `;
+                        } else {
+                            line += `[${block}] `; // Assumes block names are short
+                        }
+                    } else {
+                        line += "      "; // Padding for empty slot
+                    }
+                });
+                outputLines.push(line);
+            }
+
+            // --- 4. Draw Table ---
+            if (stacks.length > 0) {
+                let tableLine = "";
+                stacks.forEach(() => {
+                    tableLine += "------";
+                });
+                outputLines.push(tableLine);
+                outputLines.push("       T A B L E");
+            }
+
+            return outputLines.join('\n');
+        }
+
+        // Run on load with placeholder text
+        visualizePDDL();
+
+    </script>
+</body>
+</html>

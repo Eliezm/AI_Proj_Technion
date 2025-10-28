@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PROBLEM GENERALIZATION EXPERIMENT - PRODUCTION VERSION
-======================================================
+PROBLEM GENERALIZATION EXPERIMENT - PRODUCTION VERSION (REFACTORED)
+==================================================================
 Train on a set of problems from a domain.
 Test on DIFFERENT problems from the same domain.
 
-This measures the model's ability to generalize to unseen problems within the domain.
+Compatible with new benchmark format.
 
 Usage:
     python problem_generalization_final.py
@@ -23,53 +23,38 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime
 
-# Import shared utilities
 from shared_experiment_utils import (
     setup_logging, print_section, print_subsection,
     ExperimentCheckpoint, train_gnn_model, evaluate_model_on_problems,
-    load_and_split_problems, save_results_to_json, save_results_to_txt,
-    ensure_directories_exist, get_timestamp_str, format_duration
+    save_results_to_json, save_results_to_txt,
+    ensure_directories_exist, format_duration,
+    load_and_validate_benchmarks,  # ✅ NEW
+    get_benchmarks_for_sizes  # ✅ NEW
 )
 
 import time
 
 
-# ============================================================================
-# EXPERIMENT CONFIG
-# ============================================================================
-
 class ProblemGeneralizationConfig:
     """Configuration for problem generalization experiment."""
 
-    # Experiment name
     EXPERIMENT_NAME = "problem_generalization_experiment"
-
-    # Output directory
     OUTPUT_DIR = "problem_generalization_results"
 
-    # Dataset
-    DOMAIN_FILE = "benchmarks/small/domain.pddl"
-    PROBLEM_PATTERN = "benchmarks/small/problem_*.pddl"
-    TRAIN_RATIO = 0.8  # 80% train, 20% test
-    RANDOM_SEED = 42
+    # ✅ REFACTORED: Use new benchmark format
+    BENCHMARK_DIR = "benchmarks"
+    SIZES = ["small"]  # Use small problems
+    TRAIN_RATIO = 0.8
 
-    # Training
     REWARD_VARIANT = "astar_search"
     TOTAL_TIMESTEPS = 5000
     TIMESTEPS_PER_PROBLEM = 500
+    RANDOM_SEED = 42
 
-    # Seeding
-    EVAL_RANDOM_SEED = 123
-
-
-# ============================================================================
-# MAIN EXPERIMENT
-# ============================================================================
 
 def run_problem_generalization_experiment():
     """Run the problem generalization experiment."""
 
-    # Setup
     ensure_directories_exist()
     os.makedirs(ProblemGeneralizationConfig.OUTPUT_DIR, exist_ok=True)
 
@@ -83,31 +68,53 @@ def run_problem_generalization_experiment():
     print_section("PROBLEM GENERALIZATION EXPERIMENT", logger)
 
     logger.info("Configuration:")
-    logger.info(f"  Domain: {ProblemGeneralizationConfig.DOMAIN_FILE}")
+    logger.info(f"  Benchmark directory: {ProblemGeneralizationConfig.BENCHMARK_DIR}")
+    logger.info(f"  Sizes: {ProblemGeneralizationConfig.SIZES}")
     logger.info(f"  Train/test ratio: {ProblemGeneralizationConfig.TRAIN_RATIO:.0%}")
     logger.info(f"  Total timesteps: {ProblemGeneralizationConfig.TOTAL_TIMESTEPS}")
     logger.info(f"  Reward variant: {ProblemGeneralizationConfig.REWARD_VARIANT}\n")
 
     try:
         # ====================================================================
-        # PHASE 1: LOAD & SPLIT PROBLEMS
+        # PHASE 1: LOAD BENCHMARKS
         # ====================================================================
 
-        print_subsection("PHASE 1: LOAD & SPLIT PROBLEMS", logger)
+        print_subsection("PHASE 1: LOAD BENCHMARKS", logger)
 
-        train_problems, test_problems = load_and_split_problems(
-            domain_file=ProblemGeneralizationConfig.DOMAIN_FILE,
-            problem_pattern=ProblemGeneralizationConfig.PROBLEM_PATTERN,
-            train_ratio=ProblemGeneralizationConfig.TRAIN_RATIO,
-            random_seed=ProblemGeneralizationConfig.RANDOM_SEED,
+        all_benchmarks = load_and_validate_benchmarks(
+            benchmark_dir=ProblemGeneralizationConfig.BENCHMARK_DIR,
             logger=logger
         )
 
-        domain_file = os.path.abspath(ProblemGeneralizationConfig.DOMAIN_FILE)
-        train_benchmarks = [(domain_file, os.path.abspath(p)) for p in train_problems]
-        test_benchmarks = [(domain_file, os.path.abspath(p)) for p in test_problems]
+        if not all_benchmarks:
+            logger.error("No benchmarks loaded!")
+            return 1
 
-        logger.info(f"\nTrain set ({len(train_benchmarks)} problems):")
+        # ====================================================================
+        # PHASE 2: GET PROBLEMS AND SPLIT
+        # ====================================================================
+
+        print_subsection("PHASE 2: SELECT AND SPLIT PROBLEMS", logger)
+
+        all_problems = get_benchmarks_for_sizes(
+            all_benchmarks,
+            sizes=ProblemGeneralizationConfig.SIZES
+        )
+
+        if not all_problems:
+            logger.error("No problems found for selected sizes!")
+            return 1
+
+        # Split into train/test
+        random.seed(ProblemGeneralizationConfig.RANDOM_SEED)
+        shuffled = all_problems.copy()
+        random.shuffle(shuffled)
+
+        split_idx = int(len(shuffled) * ProblemGeneralizationConfig.TRAIN_RATIO)
+        train_benchmarks = sorted(shuffled[:split_idx])
+        test_benchmarks = sorted(shuffled[split_idx:])
+
+        logger.info(f"Train set ({len(train_benchmarks)} problems):")
         for i, (_, prob) in enumerate(train_benchmarks[:3], 1):
             logger.info(f"  {i}. {os.path.basename(prob)}")
         if len(train_benchmarks) > 3:
@@ -120,17 +127,17 @@ def run_problem_generalization_experiment():
             logger.info(f"  ... and {len(test_benchmarks) - 3} more")
 
         # ====================================================================
-        # PHASE 2: TRAIN MODEL
+        # PHASE 3: TRAIN MODEL
         # ====================================================================
 
-        print_subsection("PHASE 2: TRAINING ON TRAIN SET", logger)
+        print_subsection("PHASE 3: TRAINING ON TRAIN SET", logger)
 
         checkpoint = checkpoint_manager.load()
 
         if checkpoint and 'model_path' in checkpoint and os.path.exists(checkpoint['model_path']):
             logger.info("Resuming from checkpoint...")
             model_path = checkpoint['model_path']
-            logger.info(f"Using model: {model_path}")
+            train_elapsed = checkpoint.get('train_elapsed', 0)
         else:
             logger.info("Starting fresh training...")
 
@@ -159,14 +166,15 @@ def run_problem_generalization_experiment():
 
             checkpoint_manager.save({
                 'model_path': model_path,
+                'train_elapsed': train_elapsed,
                 'phase': 'training_complete',
             })
 
         # ====================================================================
-        # PHASE 3: EVALUATE ON TEST SET
+        # PHASE 4: EVALUATE ON TEST SET
         # ====================================================================
 
-        print_subsection("PHASE 3: EVALUATION ON TEST SET", logger)
+        print_subsection("PHASE 4: EVALUATION ON TEST SET", logger)
 
         eval_start = time.time()
 
@@ -182,16 +190,17 @@ def run_problem_generalization_experiment():
         logger.info(f"\n✅ Evaluation complete ({format_duration(eval_elapsed)})")
 
         # ====================================================================
-        # PHASE 4: COMPILE RESULTS
+        # PHASE 5: COMPILE RESULTS
         # ====================================================================
 
-        print_subsection("PHASE 4: RESULTS", logger)
+        print_subsection("PHASE 5: RESULTS", logger)
 
         results = {
             'experiment': ProblemGeneralizationConfig.EXPERIMENT_NAME,
             'timestamp': datetime.now().isoformat(),
             'configuration': {
-                'domain': ProblemGeneralizationConfig.DOMAIN_FILE,
+                'benchmark_dir': ProblemGeneralizationConfig.BENCHMARK_DIR,
+                'sizes': ProblemGeneralizationConfig.SIZES,
                 'train_problems': len(train_benchmarks),
                 'test_problems': len(test_benchmarks),
                 'train_ratio': ProblemGeneralizationConfig.TRAIN_RATIO,
@@ -213,14 +222,12 @@ def run_problem_generalization_experiment():
             }
         }
 
-        # Log summary
         logger.info(f"\nExperiment Results:")
         logger.info(f"  Generalization Solve Rate: {results['summary']['generalization_solve_rate']:.1f}%")
         logger.info(f"  Avg Reward (test): {results['summary']['avg_reward_on_test']:.4f}")
         logger.info(f"  Avg Time (test): {results['summary']['avg_time_on_test']:.2f}s")
         logger.info(f"  Test Problems Solved: {results['summary']['test_problems_solved']}/{len(test_benchmarks)}")
 
-        # Save results
         json_path = os.path.join(ProblemGeneralizationConfig.OUTPUT_DIR, "results.json")
         txt_path = os.path.join(ProblemGeneralizationConfig.OUTPUT_DIR, "results.txt")
 
@@ -229,7 +236,6 @@ def run_problem_generalization_experiment():
 
         checkpoint_manager.clear()
 
-        # Final summary
         print_section("EXPERIMENT COMPLETE", logger)
         logger.info(f"✅ Problem generalization experiment completed successfully!")
         logger.info(f"   Results: {ProblemGeneralizationConfig.OUTPUT_DIR}/")
