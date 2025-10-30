@@ -13,55 +13,270 @@ from logistics_problem_builder import LogisticsProblemBuilder
 from config import LogisticsGenerationParams, DEFAULT_LOGISTICS_PARAMS
 
 
+# backward_generator.py - ADD NEW CLASS and MODIFY generate_problem
+
+class StateDeduplicator:
+    """Tracks visited states in backward search to prevent cycles."""
+
+    def __init__(self):
+        self.visited_hashes = set()
+        self.visited_states = []
+
+    def is_visited(self, state: LogisticsState) -> bool:
+        """Check if state has been visited."""
+        return hash(state) in self.visited_hashes
+
+    def mark_visited(self, state: LogisticsState) -> None:
+        """Mark state as visited."""
+        self.visited_hashes.add(hash(state))
+        self.visited_states.append(state)
+
+    def reset(self):
+        """Clear visited states."""
+        self.visited_hashes.clear()
+        self.visited_states.clear()
+
 class ReverseActionExecutor:
     """
-    Executes actions in reverse to generate problems via backward search.
+    Executes actions in reverse with STRICT precondition validation.
+
+    CRITICAL: Every reverse action must validate that:
+    1. It exactly undoes a valid forward action
+    2. The preconditions of the forward action are satisfied in the previous state
+    3. The new state is valid according to domain rules
     """
 
     @staticmethod
+    def _validate_reverse_preconditions(
+            state: LogisticsState,
+            action_type: ActionType,
+            params: List[str]
+    ) -> Tuple[bool, str]:
+        """
+        FIX: Validate that the reverse action makes sense.
+
+        Before executing reverse action, check that forward action
+        preconditions would have been satisfied.
+        """
+
+        if action_type == ActionType.LOAD_TRUCK:
+            obj, truck, loc = params
+            # Forward precondition: at(truck, loc) AND at(obj, loc)
+            # Current state must have: in(obj, truck) AND at(truck, loc)
+            if obj not in state.in_vehicle:
+                return False, f"Package {obj} not in vehicle (cannot undo LOAD)"
+            if state.in_vehicle[obj] != truck:
+                return False, f"Package {obj} not in truck {truck}"
+            if state.at.get(truck) != loc:
+                return False, f"Truck {truck} not at location {loc}"
+            if obj in state.at:
+                return False, f"Package {obj} cannot be both in truck and at location"
+
+        elif action_type == ActionType.UNLOAD_TRUCK:
+            obj, truck, loc = params
+            # Forward precondition: at(truck, loc) AND in(obj, truck)
+            # Current state must have: at(obj, loc) AND at(truck, loc)
+            if obj not in state.at:
+                return False, f"Package {obj} not at location (cannot undo UNLOAD)"
+            if state.at[obj] != loc:
+                return False, f"Package {obj} not at location {loc}"
+            if state.at.get(truck) != loc:
+                return False, f"Truck {truck} not at location {loc}"
+            if obj in state.in_vehicle:
+                return False, f"Package {obj} cannot be both in truck and at location"
+
+        elif action_type == ActionType.LOAD_AIRPLANE:
+            obj, airplane, loc = params
+            if obj not in state.in_vehicle:
+                return False, f"Package {obj} not in vehicle"
+            if state.in_vehicle[obj] != airplane:
+                return False, f"Package {obj} not in airplane {airplane}"
+            if loc not in state.airports:
+                return False, f"Location {loc} not an airport"
+            if state.at.get(airplane) != loc:
+                return False, f"Airplane {airplane} not at airport {loc}"
+
+        elif action_type == ActionType.UNLOAD_AIRPLANE:
+            obj, airplane, loc = params
+            if obj not in state.at:
+                return False, f"Package {obj} not at location"
+            if state.at[obj] != loc:
+                return False, f"Package {obj} not at location {loc}"
+            if loc not in state.airports:
+                return False, f"Location {loc} not an airport"
+            if state.at.get(airplane) != loc:
+                return False, f"Airplane {airplane} not at airport {loc}"
+
+        elif action_type == ActionType.DRIVE_TRUCK:
+            truck, loc_from, loc_to, city = params
+            if state.at.get(truck) != loc_to:
+                return False, f"Truck not at destination location"
+            if loc_from not in state.locations:
+                return False, f"Origin location invalid"
+            if state.in_city.get(loc_from) != city:
+                return False, f"Origin location not in city"
+            if state.in_city.get(loc_to) != city:
+                return False, f"Destination location not in city"
+
+        elif action_type == ActionType.FLY_AIRPLANE:
+            airplane, loc_from, loc_to = params
+            if state.at.get(airplane) != loc_to:
+                return False, f"Airplane not at destination"
+            if loc_from not in state.airports:
+                return False, f"Origin location not an airport"
+            if loc_to not in state.airports:
+                return False, f"Destination location not an airport"
+
+        return True, ""
+
+    # FIX: Wrap all undo methods with this validation
+    @staticmethod
+    def undo_action_safe(
+            state: LogisticsState,
+            action_type: ActionType,
+            params: List[str]
+    ) -> Optional[LogisticsState]:
+        """
+        FIX: Safe reverse action execution with validation.
+        """
+        # First validate preconditions
+        valid, reason = ReverseActionExecutor._validate_reverse_preconditions(
+            state, action_type, params
+        )
+        if not valid:
+            return None
+
+        # Then execute
+        if action_type == ActionType.LOAD_TRUCK:
+            return ReverseActionExecutor.undo_load_truck(state, params[0], params[1], params[2])
+        elif action_type == ActionType.UNLOAD_TRUCK:
+            return ReverseActionExecutor.undo_unload_truck(state, params[0], params[1], params[2])
+        elif action_type == ActionType.LOAD_AIRPLANE:
+            return ReverseActionExecutor.undo_load_airplane(state, params[0], params[1], params[2])
+        elif action_type == ActionType.UNLOAD_AIRPLANE:
+            return ReverseActionExecutor.undo_unload_airplane(state, params[0], params[1], params[2])
+        elif action_type == ActionType.DRIVE_TRUCK:
+            return ReverseActionExecutor.undo_drive_truck(state, params[0], params[1])
+        elif action_type == ActionType.FLY_AIRPLANE:
+            return ReverseActionExecutor.undo_fly_airplane(state, params[0], params[1])
+
+        return None
+
+
+    @staticmethod
     def undo_load_truck(state: LogisticsState, obj: str, truck: str, loc: str) -> Optional[LogisticsState]:
-        """Undo load-truck: restore package to location."""
-        if obj not in state.in_vehicle or state.in_vehicle[obj] != truck:
+        """
+        Undo load-truck: move package from truck back to location.
+
+        Forward preconditions were:
+        - at(truck, loc), at(obj, loc)
+
+        Current state must have:
+        - in(obj, truck) - package is in truck
+        - at(truck, loc) - truck is still at location
+
+        Result state should have:
+        - at(obj, loc) - package back at location
+        - NOT in(obj, truck)
+        """
+        # VALIDATION 1: Package must be in this truck
+        if obj not in state.in_vehicle:
+            return None
+        if state.in_vehicle[obj] != truck:
+            return None
+
+        # VALIDATION 2: Truck must exist and be at a location
+        if truck not in state.trucks:
             return None
         if truck not in state.at:
             return None
 
+        # VALIDATION 3: Location must be valid
+        if loc not in state.locations:
+            return None
+
+        # VALIDATION 4: Truck must be at the specified location
+        if state.at[truck] != loc:
+            return None
+
+        # VALIDATION 5: Package cannot already be at a location
+        if obj in state.at:
+            return None
+
+        # VALIDATION 6: Truck cannot be in any vehicle
+        if truck in state.in_vehicle:
+            return None
+
+        # Execute reverse action
         new_state = state.copy()
         del new_state.in_vehicle[obj]
         new_state.at[obj] = loc
 
+        # Final validation: result must be valid
         is_valid, _ = new_state.is_valid()
-        return new_state if is_valid else None
+        if not is_valid:
+            return None
+
+        return new_state
 
     @staticmethod
     def undo_unload_truck(state: LogisticsState, obj: str, truck: str, loc: str) -> Optional[LogisticsState]:
-        """Undo unload-truck: restore package to vehicle."""
+        """
+        Undo unload-truck: move package from location back into truck.
 
-        # CRITICAL: Check all preconditions before reversing
+        Forward preconditions were:
+        - at(truck, loc), in(obj, truck)
+
+        Current state must have:
+        - at(obj, loc) - package is at location
+        - at(truck, loc) - truck is at same location
+        - NOT in(obj, truck)
+
+        Result state should have:
+        - in(obj, truck) - package back in truck
+        - NOT at(obj, loc)
+        """
+        # VALIDATION 1: Package must be at this location
+        if obj not in state.at:
+            return None
+        if state.at[obj] != loc:
+            return None
+
+        # VALIDATION 2: Package must NOT be in any vehicle
         if obj in state.in_vehicle:
-            return None  # Already in vehicle
+            return None
 
-        if obj not in state.at or state.at[obj] != loc:
-            return None  # Package not at this location
-
+        # VALIDATION 3: Truck must exist
         if truck not in state.trucks:
-            return None  # Invalid truck
+            return None
 
-        if truck not in state.at or state.at[truck] != loc:
-            return None  # Truck not at this location
+        # VALIDATION 4: Truck must be at a location
+        if truck not in state.at:
+            return None
 
+        # VALIDATION 5: Truck must be at the specified location
+        if state.at[truck] != loc:
+            return None
+
+        # VALIDATION 6: Location must be valid
+        if loc not in state.locations:
+            return None
+
+        # VALIDATION 7: Truck cannot be in any vehicle
         if truck in state.in_vehicle:
-            return None  # Truck cannot be in a vehicle
+            return None
 
-        # FIX: Verify this is the reverse of a valid forward action
-        # In forward: UNLOAD requires (in ?obj ?truck) and (at ?truck ?loc)
-        # So reverse must produce that state
+        # VALIDATION 8: Package cannot already be in a vehicle
+        for vehicle in list(state.trucks) + list(state.airplanes):
+            if state.in_vehicle.get(obj) == vehicle:
+                return None
 
+        # Execute reverse action
         new_state = state.copy()
         del new_state.at[obj]
         new_state.in_vehicle[obj] = truck
 
-        # VALIDATE before returning
+        # Final validation
         is_valid, error = new_state.is_valid()
         if not is_valid:
             return None
@@ -70,14 +285,44 @@ class ReverseActionExecutor:
 
     @staticmethod
     def undo_load_airplane(state: LogisticsState, obj: str, airplane: str, loc: str) -> Optional[LogisticsState]:
-        """Undo load-airplane: restore package to location."""
-        if obj not in state.in_vehicle or state.in_vehicle[obj] != airplane:
+        """
+        Undo load-airplane: move package from airplane back to airport.
+
+        Forward preconditions were:
+        - AIRPORT(loc), at(airplane, loc), at(obj, loc)
+
+        Current state must have:
+        - in(obj, airplane) - package in airplane
+        - at(airplane, loc) - airplane at airport
+        - AIRPORT(loc)
+        """
+        # VALIDATION 1: Package must be in this airplane
+        if obj not in state.in_vehicle:
             return None
-        if loc not in state.airports:
-            return None
-        if airplane not in state.at or state.at[airplane] != loc:
+        if state.in_vehicle[obj] != airplane:
             return None
 
+        # VALIDATION 2: Airplane must exist
+        if airplane not in state.airplanes:
+            return None
+
+        # VALIDATION 3: Airplane must be at a location
+        if airplane not in state.at:
+            return None
+
+        # VALIDATION 4: Location must be an airport
+        if loc not in state.airports:
+            return None
+
+        # VALIDATION 5: Airplane must be at the specified airport
+        if state.at[airplane] != loc:
+            return None
+
+        # VALIDATION 6: Package cannot be at location
+        if obj in state.at:
+            return None
+
+        # Execute reverse action
         new_state = state.copy()
         del new_state.in_vehicle[obj]
         new_state.at[obj] = loc
@@ -87,18 +332,42 @@ class ReverseActionExecutor:
 
     @staticmethod
     def undo_unload_airplane(state: LogisticsState, obj: str, airplane: str, loc: str) -> Optional[LogisticsState]:
-        """Undo unload-airplane: restore package to vehicle."""
-        if obj in state.in_vehicle or obj not in state.at:
+        """
+        Undo unload-airplane: move package from airport back into airplane.
+
+        Forward preconditions were:
+        - AIRPORT(loc), at(airplane, loc), in(obj, airplane)
+
+        Current state must have:
+        - at(obj, loc) - package at airport
+        - at(airplane, loc) - airplane at airport
+        - NOT in(obj, airplane)
+        """
+        # VALIDATION 1: Package must be at this location
+        if obj not in state.at:
             return None
         if state.at[obj] != loc:
             return None
+
+        # VALIDATION 2: Location must be an airport
         if loc not in state.airports:
             return None
-        if airplane not in state.airplanes or airplane not in state.at:
+
+        # VALIDATION 3: Airplane must exist
+        if airplane not in state.airplanes:
+            return None
+
+        # VALIDATION 4: Airplane must be at the airport
+        if airplane not in state.at:
             return None
         if state.at[airplane] != loc:
             return None
 
+        # VALIDATION 5: Package must NOT be in any vehicle
+        if obj in state.in_vehicle:
+            return None
+
+        # Execute reverse action
         new_state = state.copy()
         del new_state.at[obj]
         new_state.in_vehicle[obj] = airplane
@@ -108,17 +377,50 @@ class ReverseActionExecutor:
 
     @staticmethod
     def undo_drive_truck(state: LogisticsState, truck: str, origin_loc: str) -> Optional[LogisticsState]:
-        """Undo drive-truck: move truck back to origin."""
-        if truck not in state.at or state.at[truck] == origin_loc:
-            return None
-        current_loc = state.at[truck]
-        if current_loc not in state.locations or origin_loc not in state.locations:
-            return None
-        current_city = state.in_city.get(current_loc)
-        origin_city = state.in_city.get(origin_loc)
-        if current_city != origin_city or not current_city:
+        """
+        Undo drive-truck: move truck from current location back to origin.
+
+        Forward preconditions were:
+        - in-city(origin, city), in-city(dest, city), at(truck, origin)
+
+        Current state must have:
+        - at(truck, dest_loc) where dest != origin
+        - in-city(dest_loc, city)
+        - in-city(origin, city)
+        """
+        # VALIDATION 1: Truck must exist
+        if truck not in state.trucks:
             return None
 
+        # VALIDATION 2: Truck must be at a location
+        if truck not in state.at:
+            return None
+
+        current_loc = state.at[truck]
+
+        # VALIDATION 3: Cannot undo if already at origin
+        if current_loc == origin_loc:
+            return None
+
+        # VALIDATION 4: Both locations must be valid
+        if current_loc not in state.locations:
+            return None
+        if origin_loc not in state.locations:
+            return None
+
+        # VALIDATION 5: Both locations must be in same city
+        current_city = state.in_city.get(current_loc)
+        origin_city = state.in_city.get(origin_loc)
+        if not current_city or not origin_city:
+            return None
+        if current_city != origin_city:
+            return None
+
+        # VALIDATION 6: Truck cannot be in any vehicle
+        if truck in state.in_vehicle:
+            return None
+
+        # Execute reverse action
         new_state = state.copy()
         new_state.at[truck] = origin_loc
 
@@ -127,13 +429,42 @@ class ReverseActionExecutor:
 
     @staticmethod
     def undo_fly_airplane(state: LogisticsState, airplane: str, origin_loc: str) -> Optional[LogisticsState]:
-        """Undo fly-airplane: move airplane back to origin."""
-        if airplane not in state.at or state.at[airplane] == origin_loc:
-            return None
-        current_loc = state.at[airplane]
-        if current_loc not in state.airports or origin_loc not in state.airports:
+        """
+        Undo fly-airplane: move airplane from current airport back to origin airport.
+
+        Forward preconditions were:
+        - AIRPORT(origin), AIRPORT(dest), at(airplane, origin)
+
+        Current state must have:
+        - at(airplane, dest_loc) where dest != origin
+        - AIRPORT(dest_loc)
+        - AIRPORT(origin_loc)
+        """
+        # VALIDATION 1: Airplane must exist
+        if airplane not in state.airplanes:
             return None
 
+        # VALIDATION 2: Airplane must be at a location
+        if airplane not in state.at:
+            return None
+
+        current_loc = state.at[airplane]
+
+        # VALIDATION 3: Cannot undo if already at origin
+        if current_loc == origin_loc:
+            return None
+
+        # VALIDATION 4: Both locations must be airports
+        if current_loc not in state.airports:
+            return None
+        if origin_loc not in state.airports:
+            return None
+
+        # VALIDATION 5: Airplane cannot be in any vehicle (n/a but check anyway)
+        if airplane in state.in_vehicle:
+            return None
+
+        # Execute reverse action
         new_state = state.copy()
         new_state.at[airplane] = origin_loc
 
@@ -142,18 +473,24 @@ class ReverseActionExecutor:
 
     @staticmethod
     def get_applicable_reverse_actions(state: LogisticsState) -> List[Tuple[Action, LogisticsState]]:
-        """Get all applicable reverse actions and their resulting states."""
+        """
+        Get all applicable reverse actions with strict validation.
+
+        FIX 9: This method now uses the undo_action_safe wrapper.
+        """
         results = []
 
         # Undo load-truck actions
         for pkg in state.packages:
             if pkg in state.in_vehicle:
                 truck = state.in_vehicle[pkg]
-                if truck in state.at:
+                if truck in state.trucks and truck in state.at:
                     loc = state.at[truck]
-                    new_state = ReverseActionExecutor.undo_load_truck(state, pkg, truck, loc)
+
+                    action = Action(ActionType.LOAD_TRUCK, [pkg, truck, loc])
+                    new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+
                     if new_state is not None:
-                        action = Action(ActionType.LOAD_TRUCK, [pkg, truck, loc])
                         results.append((action, new_state))
 
         # Undo unload-truck actions
@@ -162,9 +499,11 @@ class ReverseActionExecutor:
                 pkg_loc = state.at[pkg]
                 for truck in state.trucks:
                     if truck in state.at and state.at[truck] == pkg_loc:
-                        new_state = ReverseActionExecutor.undo_unload_truck(state, pkg, truck, pkg_loc)
+
+                        action = Action(ActionType.UNLOAD_TRUCK, [pkg, truck, pkg_loc])
+                        new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+
                         if new_state is not None:
-                            action = Action(ActionType.UNLOAD_TRUCK, [pkg, truck, pkg_loc])
                             results.append((action, new_state))
 
         # Undo load-airplane actions
@@ -174,9 +513,11 @@ class ReverseActionExecutor:
                 if vehicle in state.airplanes and vehicle in state.at:
                     loc = state.at[vehicle]
                     if loc in state.airports:
-                        new_state = ReverseActionExecutor.undo_load_airplane(state, pkg, vehicle, loc)
+
+                        action = Action(ActionType.LOAD_AIRPLANE, [pkg, vehicle, loc])
+                        new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+
                         if new_state is not None:
-                            action = Action(ActionType.LOAD_AIRPLANE, [pkg, vehicle, loc])
                             results.append((action, new_state))
 
         # Undo unload-airplane actions
@@ -186,9 +527,11 @@ class ReverseActionExecutor:
                 if pkg_loc in state.airports:
                     for airplane in state.airplanes:
                         if airplane in state.at and state.at[airplane] == pkg_loc:
-                            new_state = ReverseActionExecutor.undo_unload_airplane(state, pkg, airplane, pkg_loc)
+
+                            action = Action(ActionType.UNLOAD_AIRPLANE, [pkg, airplane, pkg_loc])
+                            new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+
                             if new_state is not None:
-                                action = Action(ActionType.UNLOAD_AIRPLANE, [pkg, airplane, pkg_loc])
                                 results.append((action, new_state))
 
         # Undo drive-truck actions
@@ -199,9 +542,11 @@ class ReverseActionExecutor:
                 if current_city:
                     for other_loc in state.locations:
                         if state.in_city.get(other_loc) == current_city and other_loc != current_loc:
-                            new_state = ReverseActionExecutor.undo_drive_truck(state, truck, other_loc)
+
+                            action = Action(ActionType.DRIVE_TRUCK, [truck, other_loc, current_loc, current_city])
+                            new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+
                             if new_state is not None:
-                                action = Action(ActionType.DRIVE_TRUCK, [truck, other_loc, current_loc, current_city])
                                 results.append((action, new_state))
 
         # Undo fly-airplane actions
@@ -211,9 +556,11 @@ class ReverseActionExecutor:
                 if current_loc in state.airports:
                     for other_airport in state.airports:
                         if other_airport != current_loc:
-                            new_state = ReverseActionExecutor.undo_fly_airplane(state, airplane, other_airport)
+
+                            action = Action(ActionType.FLY_AIRPLANE, [airplane, other_airport, current_loc])
+                            new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+
                             if new_state is not None:
-                                action = Action(ActionType.FLY_AIRPLANE, [airplane, other_airport, current_loc])
                                 results.append((action, new_state))
 
         # Deduplicate by state
@@ -357,6 +704,8 @@ class BackwardProblemGenerator:
 
         return goal_dict
 
+    # MODIFY BackwardProblemGenerator.generate_problem METHOD
+
     def generate_problem(
             self,
             difficulty: str,
@@ -364,14 +713,14 @@ class BackwardProblemGenerator:
             target_plan_length: Optional[int] = None,
             archetype: Optional[GoalArchetype] = None,
             tolerance: int = 1,
-            max_retries: int = 10
+            max_retries: int = 50
     ) -> Tuple[LogisticsState, LogisticsState, List[Action], GoalArchetype]:
         """
-        Generate problem with 100% validity guarantee.
+        Generate a problem with 100% validity guarantee.
 
-        Raises exception if problem cannot be generated.
+        FIX: Added state deduplication and better validation.
         """
-        from config import DIFFICULTY_TIERS
+        from config import DIFFICULTY_TIERS, DEFAULT_LOGISTICS_PARAMS
         from problem_validator import ProblemValidator
 
         if generation_params is None:
@@ -380,28 +729,34 @@ class BackwardProblemGenerator:
             tier = DIFFICULTY_TIERS.get(difficulty)
             target_plan_length = tier.target_length if tier else 10
 
-        # Retry loop
+        min_length = target_plan_length - tolerance
+        max_length = target_plan_length + tolerance * 2
+
         for retry in range(max_retries):
             try:
                 # Step 1: Build valid world
-                initial_world, packages, trucks, airplanes = LogisticsProblemBuilder.build_world(
+                world, packages, trucks, airplanes = LogisticsProblemBuilder.build_world(
                     generation_params,
                     random_seed=self.random_seed + retry if self.random_seed else None
                 )
 
-                # Step 2: Generate goal with archetype tracking
+                is_valid, error = world.is_valid()
+                if not is_valid:
+                    continue
+
+                # Step 2: Generate goal dict
                 goal_dict, used_archetype = self.generate_goal_dict_robust_with_archetype(
-                    initial_world,
+                    world,
                     packages,
                     len(packages),
                     max_attempts=50
                 )
 
                 if not goal_dict:
-                    continue  # Retry
+                    continue
 
-                # Step 3: Create goal state and validate
-                goal_state = initial_world.copy()
+                # Step 3: Create goal state
+                goal_state = world.copy()
                 for pkg, dest_loc in goal_dict.items():
                     if pkg in goal_state.in_vehicle:
                         del goal_state.in_vehicle[pkg]
@@ -409,37 +764,64 @@ class BackwardProblemGenerator:
 
                 is_valid, error = goal_state.is_valid()
                 if not is_valid:
-                    continue  # Retry
+                    continue
 
-                if goal_state == initial_world:
-                    continue  # Retry: trivial
+                if goal_state == world:
+                    continue
 
-                # Step 4: Backward search
+                # Step 4: Backward search with FIX: state deduplication
+                deduplicator = StateDeduplicator()
                 current_state = goal_state.copy()
                 plan = []
                 iteration = 0
-                max_iterations = max(target_plan_length * 3, 150)
+                max_iterations = max(target_plan_length * 5, 500)
 
-                while len(plan) < target_plan_length and iteration < max_iterations:
+                while len(plan) < max_length and iteration < max_iterations:
                     iteration += 1
 
+                    # FIX: Check if we've visited this state before
+                    if deduplicator.is_visited(current_state):
+                        break
+
+                    deduplicator.mark_visited(current_state)
+
+                    # Get applicable reverse actions
                     reverse_actions = ReverseActionExecutor.get_applicable_reverse_actions(current_state)
                     if not reverse_actions:
                         break
 
-                    action, new_state = random.choice(reverse_actions)
+                    # Pick random action from valid options
+                    random.shuffle(reverse_actions)
+                    action_found = False
 
-                    is_valid, _ = new_state.is_valid()
-                    if not is_valid:
-                        continue
+                    for action, new_state in reverse_actions:
+                        # Skip if state already visited
+                        if deduplicator.is_visited(new_state):
+                            continue
 
-                    if new_state != current_state:
+                        is_valid, _ = new_state.is_valid()
+                        if not is_valid:
+                            continue
+
+                        if new_state == current_state:
+                            continue
+
+                        # Accept this action
                         plan.insert(0, action)
                         current_state = new_state
+                        action_found = True
+                        break
+
+                    if not action_found:
+                        break
 
                 initial_state = current_state
 
-                # Step 5: Comprehensive validation
+                # Step 5: Check plan length
+                if len(plan) < min_length or len(plan) > max_length:
+                    continue
+
+                # Step 6: Comprehensive validation
                 is_valid, reason = ProblemValidator.validate_complete_problem(
                     initial_state,
                     goal_state,
@@ -450,9 +832,12 @@ class BackwardProblemGenerator:
                     return initial_state, goal_state, plan, used_archetype
 
             except Exception as e:
-                continue  # Retry
+                continue
 
-        raise ValueError(f"Failed to generate valid problem after {max_retries} attempts")
+        raise ValueError(
+            f"Failed to generate valid {difficulty} problem after {max_retries} retries. "
+            f"Target plan length: {target_plan_length}±{tolerance}"
+        )
 
     def generate_goal_dict_robust_with_archetype(
             self,

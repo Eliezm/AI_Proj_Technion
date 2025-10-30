@@ -109,8 +109,24 @@ class PDDLWriter:
 
     @staticmethod
     def state_to_init_pddl(state: LogisticsState) -> str:
-        """Convert a state to PDDL :init format (without type predicates)."""
+        """Convert a state to PDDL :init format WITH type predicates."""
         facts = []
+
+        # Type predicates (REQUIRED for proper PDDL)
+        for obj in sorted(state.packages):
+            facts.append(f"(OBJ {obj})")
+        for truck in sorted(state.trucks):
+            facts.append(f"(TRUCK {truck})")
+        for airplane in sorted(state.airplanes):
+            facts.append(f"(AIRPLANE {airplane})")
+        for loc in sorted(state.locations):
+            facts.append(f"(LOCATION {loc})")
+        for city in sorted(state.cities):
+            facts.append(f"(CITY {city})")
+
+        # Airport type predicates
+        for airport in sorted(state.airports):
+            facts.append(f"(AIRPORT {airport})")
 
         # at facts
         for obj, loc in sorted(state.at.items()):
@@ -124,27 +140,40 @@ class PDDLWriter:
         for loc, city in sorted(state.in_city.items()):
             facts.append(f"(in-city {loc} {city})")
 
-        # AIRPORT predicates
-        for airport in sorted(state.airports):
-            facts.append(f"(AIRPORT {airport})")
-
         return " ".join(facts)
+
+    # pddl_writer.py - REPLACE state_to_goal_pddl METHOD
 
     @staticmethod
     def state_to_goal_pddl(state: LogisticsState) -> str:
-        """Convert a state to PDDL :goal format (packages only)."""
+        """
+        Convert a state to PDDL :goal format.
+
+        FIX: Handle packages that are in vehicles at goal time.
+        """
         facts = []
 
-        # at facts for packages (packages should be at specific locations)
+        # at facts for packages only
         for pkg in sorted(state.packages):
             if pkg in state.at:
                 facts.append(f"(at {pkg} {state.at[pkg]})")
+            elif pkg in state.in_vehicle:
+                # FIX: Package is in a vehicle - extract vehicle location
+                vehicle = state.in_vehicle[pkg]
+                if vehicle in state.at:
+                    # Goal location is same as vehicle location
+                    facts.append(f"(at {pkg} {state.at[vehicle]})")
+                else:
+                    raise ValueError(f"Vehicle {vehicle} carrying {pkg} has no location in goal state")
+            else:
+                raise ValueError(f"Package {pkg} has no location or vehicle in goal state")
 
         if not facts:
-            facts.append("(at pkg-0 loc-0)")  # Fallback
+            raise ValueError("Goal state has no package locations")
 
         if len(facts) == 1:
             return facts[0]
+
         return "(and " + " ".join(facts) + ")"
 
     @staticmethod

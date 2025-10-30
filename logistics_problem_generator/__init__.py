@@ -17,6 +17,9 @@ from .baseline_planner import FastDownwardRunner
 from .metadata_store import MetadataStore, ProblemMetadata
 from .validator import PDDLValidator
 from .main import ProblemGenerationFramework
+from .problem_validator import ProblemValidator
+from .goal_validators import GoalValidator
+
 
 __all__ = [
     'LogisticsState',
@@ -36,4 +39,6 @@ __all__ = [
     'ProblemMetadata',
     'PDDLValidator',
     'ProblemGenerationFramework',
+    'ProblemValidator',
+    'GoalValidator',
 ]

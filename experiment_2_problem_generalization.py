@@ -9,7 +9,7 @@ Test on DIFFERENT problems from the same domain.
 Compatible with new benchmark format.
 
 Usage:
-    python problem_generalization_final.py
+    python experiment_2_problem_generalization.py
 """
 
 import sys

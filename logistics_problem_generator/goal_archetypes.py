@@ -263,6 +263,8 @@ def create_goal_state_from_dict(
     return goal_state
 
 
+# goal_archetypes.py - REPLACE is_goal_achievable FUNCTION
+
 def is_goal_achievable(
         initial_state: LogisticsState,
         goal_dict: Dict[str, str]
@@ -270,16 +272,28 @@ def is_goal_achievable(
     """
     Quick heuristic check that goal is achievable.
 
+    FIX: More comprehensive validation.
+
     Returns: (is_achievable, reason)
     """
-    # Check 1: All goal packages exist in initial state
+    # Check 1: Empty goal
+    if not goal_dict:
+        return False, "Empty goal"
+
+    # Check 2: All goal packages exist in initial state
     for pkg, goal_loc in goal_dict.items():
         if pkg not in initial_state.packages:
             return False, f"Package {pkg} does not exist"
         if goal_loc not in initial_state.locations:
             return False, f"Goal location {goal_loc} does not exist"
 
-    # Check 2: All packages in initial state are at valid locations
+    # Check 3: Package not already at goal (non-trivial)
+    for pkg, goal_loc in goal_dict.items():
+        current_loc = initial_state.at.get(pkg)
+        if current_loc == goal_loc:
+            return False, f"Package {pkg} already at goal location {goal_loc} (trivial)"
+
+    # Check 4: All packages in initial state are at valid locations
     for pkg in goal_dict.keys():
         current_loc = initial_state.at.get(pkg)
         if current_loc is None:
@@ -290,24 +304,25 @@ def is_goal_achievable(
             else:
                 return False, f"Package {pkg} has no location or vehicle"
 
-    # Check 3: Goal is different from initial state
-    is_different = False
-    for pkg, goal_loc in goal_dict.items():
-        if initial_state.at.get(pkg) != goal_loc:
-            is_different = True
-            break
-    if not is_different:
-        return False, "Goal equals initial state (trivial)"
-
-    # Check 4: At least one vehicle exists for transport
+    # Check 5: At least one vehicle exists for transport
     if not initial_state.trucks and not initial_state.airplanes:
         return False, "No vehicles to perform transport"
 
-    # Check 5: Intra-city goals must have trucks in that city
+    # Check 6: Intra-city goals must have trucks in that city
     for pkg, goal_loc in goal_dict.items():
         initial_loc = initial_state.at.get(pkg)
+        if not initial_loc:
+            if pkg in initial_state.in_vehicle:
+                vehicle = initial_state.in_vehicle[pkg]
+                initial_loc = initial_state.at.get(vehicle)
+            if not initial_loc:
+                return False, f"Cannot determine initial location of {pkg}"
+
         goal_city = initial_state.in_city.get(goal_loc)
         initial_city = initial_state.in_city.get(initial_loc)
+
+        if not goal_city or not initial_city:
+            return False, f"Invalid city mapping for {pkg}"
 
         if goal_city == initial_city:  # Intra-city
             trucks_in_city = [
@@ -321,5 +336,27 @@ def is_goal_achievable(
                 return False, "Inter-city goal needs airplane"
             if not initial_state.airports:
                 return False, "Inter-city goal needs airports"
+
+            # Check source city has airport and truck
+            source_airports = [a for a in initial_state.airports
+                               if initial_state.in_city.get(a) == initial_city]
+            source_trucks = [t for t in initial_state.trucks
+                             if initial_state.in_city.get(initial_state.at.get(t)) == initial_city]
+
+            if not source_airports:
+                return False, f"Source city {initial_city} has no airport"
+            if not source_trucks:
+                return False, f"Source city {initial_city} has no trucks"
+
+            # Check dest city has airport and truck
+            dest_airports = [a for a in initial_state.airports
+                             if initial_state.in_city.get(a) == goal_city]
+            dest_trucks = [t for t in initial_state.trucks
+                           if initial_state.in_city.get(initial_state.at.get(t)) == goal_city]
+
+            if not dest_airports:
+                return False, f"Destination city {goal_city} has no airport"
+            if not dest_trucks:
+                return False, f"Destination city {goal_city} has no trucks"
 
     return True, "Goal is achievable"

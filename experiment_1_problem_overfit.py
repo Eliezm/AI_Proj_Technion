@@ -14,7 +14,7 @@ Features:
   ✓ Statistical analysis of overfitting
 
 Usage:
-    python overfit_experiment.py \
+    python experiment_1_problem_overfit.py \
         --domain domain.pddl \
         --problems "problem_small_*.pddl" \
         --num-problems 5 \
@@ -103,7 +103,7 @@ class ProblemStats:
         return asdict(self)
 
 
-# FILE: overfit_experiment.py
+# FILE: experiment_1_problem_overfit.py
 # REPLACE THIS DATACLASS DEFINITION
 
 @dataclass

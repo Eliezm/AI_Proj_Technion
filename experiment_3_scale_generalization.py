@@ -9,7 +9,7 @@ Test on medium/large problems from the same domain.
 Compatible with new benchmark format.
 
 Usage:
-    python scale_generalization_final.py
+    python experiment_3_scale_generalization.py
 """
 
 import sys

@@ -244,54 +244,103 @@ class ActionExecutor:
         else:
             return None
 
+    # actions.py - REPLACE get_applicable_actions METHOD
+
     @staticmethod
     def get_applicable_actions(state: LogisticsState) -> List[Action]:
-        """Get all applicable actions in the current state (forward direction)."""
+        """Get all applicable actions in the current state (forward direction).
+
+        FIX: Deduplicate actions to avoid generating the same action multiple times.
+        """
         applicable = []
+        seen = set()  # FIX: Track seen actions
 
         # Load-truck actions
         for pkg in state.packages:
+            if pkg in state.in_vehicle:
+                continue  # Skip if already in vehicle
+            pkg_loc = state.at.get(pkg)
             for truck in state.trucks:
-                for loc in state.locations:
-                    if ActionExecutor.can_execute_load_truck(state, pkg, truck, loc):
-                        applicable.append(Action(ActionType.LOAD_TRUCK, [pkg, truck, loc]))
+                truck_loc = state.at.get(truck)
+                if pkg_loc == truck_loc and ActionExecutor.can_execute_load_truck(state, pkg, truck, pkg_loc):
+                    action = Action(ActionType.LOAD_TRUCK, [pkg, truck, pkg_loc])
+                    if action not in seen:
+                        applicable.append(action)
+                        seen.add(action)
 
         # Unload-truck actions
         for pkg in state.packages:
-            for truck in state.trucks:
-                for loc in state.locations:
-                    if ActionExecutor.can_execute_unload_truck(state, pkg, truck, loc):
-                        applicable.append(Action(ActionType.UNLOAD_TRUCK, [pkg, truck, loc]))
+            if pkg not in state.in_vehicle:
+                continue  # Skip if not in vehicle
+            vehicle = state.in_vehicle[pkg]
+            if vehicle not in state.trucks:
+                continue
+            truck_loc = state.at.get(vehicle)
+            if truck_loc and ActionExecutor.can_execute_unload_truck(state, pkg, vehicle, truck_loc):
+                action = Action(ActionType.UNLOAD_TRUCK, [pkg, vehicle, truck_loc])
+                if action not in seen:
+                    applicable.append(action)
+                    seen.add(action)
 
         # Load-airplane actions
         for pkg in state.packages:
+            if pkg in state.in_vehicle:
+                continue
+            pkg_loc = state.at.get(pkg)
+            if pkg_loc not in state.airports:
+                continue
             for airplane in state.airplanes:
-                for loc in state.airports:
-                    if ActionExecutor.can_execute_load_airplane(state, pkg, airplane, loc):
-                        applicable.append(Action(ActionType.LOAD_AIRPLANE, [pkg, airplane, loc]))
+                airplane_loc = state.at.get(airplane)
+                if pkg_loc == airplane_loc and ActionExecutor.can_execute_load_airplane(state, pkg, airplane, pkg_loc):
+                    action = Action(ActionType.LOAD_AIRPLANE, [pkg, airplane, pkg_loc])
+                    if action not in seen:
+                        applicable.append(action)
+                        seen.add(action)
 
         # Unload-airplane actions
         for pkg in state.packages:
-            for airplane in state.airplanes:
-                for loc in state.airports:
-                    if ActionExecutor.can_execute_unload_airplane(state, pkg, airplane, loc):
-                        applicable.append(Action(ActionType.UNLOAD_AIRPLANE, [pkg, airplane, loc]))
+            if pkg not in state.in_vehicle:
+                continue
+            vehicle = state.in_vehicle[pkg]
+            if vehicle not in state.airplanes:
+                continue
+            airplane_loc = state.at.get(vehicle)
+            if airplane_loc and airplane_loc in state.airports and ActionExecutor.can_execute_unload_airplane(state,
+                                                                                                              pkg,
+                                                                                                              vehicle,
+                                                                                                              airplane_loc):
+                action = Action(ActionType.UNLOAD_AIRPLANE, [pkg, vehicle, airplane_loc])
+                if action not in seen:
+                    applicable.append(action)
+                    seen.add(action)
 
         # Drive-truck actions
         for truck in state.trucks:
             truck_loc = state.at.get(truck)
-            if truck_loc:
-                truck_city = state.in_city.get(truck_loc)
-                for dest_loc in state.locations:
-                    if state.in_city.get(dest_loc) == truck_city and dest_loc != truck_loc:
-                        applicable.append(Action(ActionType.DRIVE_TRUCK, [truck, truck_loc, dest_loc, truck_city]))
+            if not truck_loc:
+                continue
+            truck_city = state.in_city.get(truck_loc)
+            if not truck_city:
+                continue
+            for dest_loc in state.locations:
+                if dest_loc != truck_loc and state.in_city.get(dest_loc) == truck_city:
+                    if ActionExecutor.can_execute_drive_truck(state, truck, truck_loc, dest_loc, truck_city):
+                        action = Action(ActionType.DRIVE_TRUCK, [truck, truck_loc, dest_loc, truck_city])
+                        if action not in seen:
+                            applicable.append(action)
+                            seen.add(action)
 
         # Fly-airplane actions
         for airplane in state.airplanes:
             airplane_loc = state.at.get(airplane)
-            if airplane_loc and airplane_loc in state.airports:
-                for dest_airport in state.airports:
-                    if dest_airport != airplane_loc:
-                        applicable.append(Action(ActionType.FLY_AIRPLANE, [airplane, airplane_loc, dest_airport]))
+            if not airplane_loc or airplane_loc not in state.airports:
+                continue
+            for dest_airport in state.airports:
+                if dest_airport != airplane_loc:
+                    if ActionExecutor.can_execute_fly_airplane(state, airplane, airplane_loc, dest_airport):
+                        action = Action(ActionType.FLY_AIRPLANE, [airplane, airplane_loc, dest_airport])
+                        if action not in seen:
+                            applicable.append(action)
+                            seen.add(action)
 
         return applicable

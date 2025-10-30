@@ -52,8 +52,8 @@ class OverfitExperimentConfig:
     NUM_PROBLEMS = 5  # Use only 5 problems for overfitting
 
     REWARD_VARIANT = "astar_search"
-    TOTAL_TIMESTEPS = 2000
-    TIMESTEPS_PER_PROBLEM = 500
+    TOTAL_TIMESTEPS = 12
+    TIMESTEPS_PER_PROBLEM = 3
     NUM_EVAL_RUNS_PER_PROBLEM = 3
     RANDOM_SEED = 42
 

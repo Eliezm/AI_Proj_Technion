@@ -241,8 +241,8 @@ def main():
     #     ### experiments
     #     # "shared_experiment_utils.py",
     #     # "overfit_experiment_final.py",
-    #     # "problem_generalization_final.py",
-    #     # "scale_generalization_final.py",
+    #     # "experiment_2_problem_generalization.py",
+    #     # "experiment_3_scale_generalization.py",
     #     # "curriculum_learning_final.py",
     #     #
     #     # # Core GNN and Environment Files
@@ -307,10 +307,10 @@ def main():
     #
     #
     #     # experiments
-    #     # "overfit_experiment.py",
+    #     # "experiment_1_problem_overfit.py",
     #     # "problem_generalization_experiment.py",
     #     # "scale_generalization_experiment.py",
-    #     # "curriculum_experiment.py",
+    #     # "experiment_4_curriculum_learning.py",
     #
     #
     #
@@ -323,6 +323,7 @@ def main():
         "state.py",
         "actions.py",
         "goal_archetypes.py",
+        "goal_validators.py",
         "backward_generator.py",
         "pddl_writer.py",
         "baseline_planner.py",
@@ -332,6 +333,7 @@ def main():
         "__init__.py",
         "logistics_problem_builder.py",
         "example_usage.py",
+        "problem_validator.py",
     ]
 
     if not infra_files:

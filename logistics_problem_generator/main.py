@@ -29,6 +29,10 @@ from pddl_writer import PDDLWriter
 from baseline_planner import FastDownwardRunner
 from metadata_store import MetadataStore, ProblemMetadata
 from validator import PDDLValidator
+from state import LogisticsState
+from .problem_validator import ProblemValidator
+from actions import Action
+
 
 
 class ProblemGenerationFramework:
@@ -48,13 +52,16 @@ class ProblemGenerationFramework:
         self.metadata_store = MetadataStore(METADATA_DIR)
 
     def generate_batch(
-        self,
-        num_problems: int,
-        difficulty: str,
-        domain_name: str = "logistics",
-        skip_planner: bool = False
+            self,
+            num_problems: int,
+            difficulty: str,
+            domain_name: str = "logistics",
+            skip_planner: bool = False
     ) -> List[str]:
-        """Generate a batch of Logistics problems (Requirement #9)."""
+        """Generate a batch of Logistics problems (Requirement #9).
+
+        FIX: Added validation before storing metadata.
+        """
 
         if difficulty not in DIFFICULTY_TIERS:
             raise ValueError(f"Unknown difficulty: {difficulty}")
@@ -85,6 +92,16 @@ class ProblemGenerationFramework:
                     tolerance=1
                 )
 
+                # FIX: Validate generated problem before writing
+                is_valid, reason = ProblemValidator.validate_complete_problem(
+                    initial_state,
+                    goal_state,
+                    plan
+                )
+                if not is_valid:
+                    print(f"  Problem {i}: ✗ Validation failed: {reason}")
+                    continue
+
                 problem_name = f"{domain_name}-{difficulty}-{i}"
                 problem_names.append(problem_name)
 
@@ -102,11 +119,21 @@ class ProblemGenerationFramework:
                     goal_state
                 )
 
+                # FIX: Validate files exist before planner
+                if not os.path.exists(domain_file):
+                    print(f"  Problem {i}: ✗ Domain file not created")
+                    continue
+                if not os.path.exists(problem_file):
+                    print(f"  Problem {i}: ✗ Problem file not created")
+                    continue
+
                 # Validate PDDL syntax
                 is_valid, error = self.validator.validate_problem(domain_file, problem_file)
                 if not is_valid:
-                    print(f"  Problem {i}: PDDL validation failed: {error}")
-                    continue
+                    pddl_error = error if error else "Unknown error"
+                    if "not found" not in pddl_error.lower():
+                        print(f"  Problem {i}: ✗ PDDL validation failed: {pddl_error[:100]}")
+                        continue
 
                 print(f"  Problem {i}: ", end='', flush=True)
 
@@ -148,7 +175,7 @@ class ProblemGenerationFramework:
                         }
                         print(f"✗ Planner error: {str(e)[:50]}")
 
-                # Store metadata
+                # FIX: Store metadata only if all checks passed
                 metadata = ProblemMetadata(
                     problem_name=problem_name,
                     domain=domain_name,
@@ -171,7 +198,7 @@ class ProblemGenerationFramework:
                 self.metadata_store.save_metadata(metadata)
 
             except Exception as e:
-                print(f"  Problem {i}: Error: {e}")
+                print(f"  Problem {i}: ✗ Error: {str(e)[:100]}")
                 logger.error(f"Problem generation error: {e}", exc_info=True)
                 continue
 
@@ -254,6 +281,50 @@ class ProblemGenerationFramework:
             else:
                 print(f"  → OK, keep as is")
             print()
+
+    def validate_generated_problem(
+            self,
+            domain_file: str,
+            problem_file: str,
+            initial_state: LogisticsState,
+            goal_state: LogisticsState,
+            plan: List[Action]
+    ) -> bool:
+        """
+        Perform all validation checks on a generated problem.
+
+        Returns True if all checks pass, False otherwise.
+        """
+        # from problem_validator import ProblemValidator
+
+        # Check 1: PDDL syntax
+        is_valid_pddl, error = self.validator.validate_problem(domain_file, problem_file)
+        if not is_valid_pddl and error and "not found" not in error.lower():
+            print(f"    ✗ PDDL syntax error: {error}")
+            return False
+
+        # Check 2: State validity
+        is_valid_initial, error = initial_state.is_valid()
+        if not is_valid_initial:
+            print(f"    ✗ Initial state invalid: {error}")
+            return False
+
+        is_valid_goal, error = goal_state.is_valid()
+        if not is_valid_goal:
+            print(f"    ✗ Goal state invalid: {error}")
+            return False
+
+        # Check 3: Complete problem validation
+        is_valid_problem, reason = ProblemValidator.validate_complete_problem(
+            initial_state,
+            goal_state,
+            plan
+        )
+        if not is_valid_problem:
+            print(f"    ✗ Problem validation failed: {reason}")
+            return False
+
+        return True
 
 
 def main():

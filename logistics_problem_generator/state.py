@@ -45,51 +45,78 @@ class LogisticsState:
             airports=self.airports.copy()
         )
 
+    # state.py - COMPLETE REWRITE OF is_valid() METHOD
+
     def is_valid(self) -> Tuple[bool, Optional[str]]:
-        """Enhanced validation with stricter checks."""
+        """Enhanced validation with comprehensive checks."""
 
-        # Original checks...
+        # FIX 0: Check basic structure
+        if not self.packages:
+            return False, "No packages"
+        if not self.trucks:
+            return False, "No trucks"
+        if not self.locations:
+            return False, "No locations"
+        if not self.cities:
+            return False, "No cities"
+
+        # FIX 1: Package location uniqueness
+        package_locations = {}
         for pkg in self.packages:
-            at_loc = pkg in self.at
-            in_veh = pkg in self.in_vehicle
-            count = sum([at_loc, in_veh])
-            if count != 1:
-                return False, f"Package {pkg} is in {count} places (should be exactly 1)"
+            at_count = 0
+            in_count = 0
 
-        # FIX 1: Validate no vehicle carries the same package twice
-        for pkg in self.packages:
-            vehicle_count = 0
-            in_which_vehicles = []
-            for vehicle in list(self.trucks) + list(self.airplanes):
-                if pkg in self.in_vehicle and self.in_vehicle[pkg] == vehicle:
-                    vehicle_count += 1
-                    in_which_vehicles.append(vehicle)
-            if vehicle_count > 1:
-                return False, f"Package {pkg} is in multiple vehicles: {in_which_vehicles}"
+            if pkg in self.at:
+                at_count = 1
+                if self.at[pkg] not in self.locations:
+                    return False, f"Package {pkg} at invalid location {self.at[pkg]}"
+                if pkg in package_locations:
+                    return False, f"Package {pkg} location defined twice"
+                package_locations[pkg] = ('at', self.at[pkg])
 
-        # FIX 2: Validate vehicles don't exceed capacity (implicit: one location each)
-        for vehicle in list(self.trucks) + list(self.airplanes):
-            if vehicle not in self.at:
-                return False, f"Vehicle {vehicle} not at any location"
-            # Each vehicle at exactly one location
-            if not isinstance(self.at[vehicle], str):
-                return False, f"Vehicle {vehicle} location is invalid type"
+            if pkg in self.in_vehicle:
+                in_count = 1
+                vehicle = self.in_vehicle[pkg]
+                if vehicle not in list(self.trucks) + list(self.airplanes):
+                    return False, f"Package {pkg} in invalid vehicle {vehicle}"
+                if pkg in package_locations:
+                    return False, f"Package {pkg} in-vehicle and at defined simultaneously"
+                package_locations[pkg] = ('in', vehicle)
 
-        # FIX 3: Validate packages in vehicles match vehicle positions
+            total = at_count + in_count
+            if total != 1:
+                return False, f"Package {pkg} in {total} places (should be exactly 1)"
+
+        # FIX 2: No duplicate packages in vehicles
+        vehicle_contents = {}
         for pkg, vehicle in self.in_vehicle.items():
-            if vehicle not in self.at:
-                return False, f"Vehicle {vehicle} carrying {pkg} has no location"
-            if vehicle not in list(self.trucks) + list(self.airplanes):
-                return False, f"Invalid vehicle {vehicle}"
+            if pkg not in self.packages:
+                return False, f"Unknown package in vehicle: {pkg}"
+            if vehicle not in vehicle_contents:
+                vehicle_contents[vehicle] = []
+            vehicle_contents[vehicle].append(pkg)
 
-        # FIX 4: Validate airport constraints
+        # FIX 3: Truck validation
+        for truck in self.trucks:
+            if truck not in self.at:
+                return False, f"Truck {truck} has no location"
+            loc = self.at[truck]
+            if loc not in self.locations:
+                return False, f"Truck {truck} at invalid location {loc}"
+            if truck in self.in_vehicle:
+                return False, f"Truck {truck} cannot be in another vehicle"
+
+        # FIX 4: Airplane validation
         for airplane in self.airplanes:
-            if airplane in self.at:
-                loc = self.at[airplane]
-                if loc not in self.airports:
-                    return False, f"Airplane {airplane} at non-airport location {loc}"
+            if airplane not in self.at:
+                return False, f"Airplane {airplane} has no location"
+            loc = self.at[airplane]
+            if loc not in self.airports:
+                return False, f"Airplane {airplane} at non-airport location {loc}"
+            if airplane in self.in_vehicle:
+                return False, f"Airplane {airplane} cannot be in another vehicle"
 
-        # FIX 5: All locations must have valid in-city mappings
+        # FIX 5: Location validation
         for loc in self.locations:
             if loc not in self.in_city:
                 return False, f"Location {loc} not mapped to any city"
@@ -97,7 +124,69 @@ class LogisticsState:
             if city not in self.cities:
                 return False, f"Location {loc} mapped to non-existent city {city}"
 
+        # FIX 6: Airport validation
+        for airport in self.airports:
+            if airport not in self.locations:
+                return False, f"Airport {airport} not in locations set"
+            # Airport must be in some city
+            if airport not in self.in_city:
+                return False, f"Airport {airport} not mapped to any city"
+
+        # FIX 7: At dict validation
+        for obj, loc in self.at.items():
+            if obj not in list(self.packages) + list(self.trucks) + list(self.airplanes):
+                return False, f"Unknown object in 'at': {obj}"
+            if loc not in self.locations:
+                return False, f"Invalid location in 'at': {loc}"
+
+        # FIX 8: In-vehicle dict validation
+        for obj, vehicle in self.in_vehicle.items():
+            if obj not in self.packages:
+                return False, f"Non-package object in vehicle: {obj}"
+            if vehicle not in list(self.trucks) + list(self.airplanes):
+                return False, f"Invalid vehicle: {vehicle}"
+            if vehicle not in self.at:
+                return False, f"Vehicle {vehicle} with no location"
+
+        # FIX 9: Consistency check - no object in two places [FIXED TYPO]
+        for obj in list(self.packages) + list(self.trucks) + list(self.airplanes):
+            locations_count = 0
+
+            if obj in self.at:
+                locations_count += 1
+            if obj in self.in_vehicle:
+                locations_count += 1
+
+            if obj in self.packages and locations_count != 1:
+                return False, f"Package {obj} in {locations_count} places (not exactly 1)"
+
+        # FIX 10: Ensure at least one city has airports
+        cities_with_airports = set()
+        for airport in self.airports:
+            city = self.in_city.get(airport)
+            if city:
+                cities_with_airports.add(city)
+
+        if len(self.cities) > 1 and len(cities_with_airports) < len(self.cities):
+            # If multiple cities, should have airports in most cities
+            if len(cities_with_airports) < max(1, len(self.cities) - 1):
+                return False, f"Insufficient airports for inter-city transport"
+
         return True, None
+
+    def __hash__(self):
+        """Make state hashable for deduplication - IMPROVED."""
+        # Hash only dynamic facts (what changes)
+        at_tuple = tuple(sorted((k, v) for k, v in self.at.items()))
+        in_vehicle_tuple = tuple(sorted((k, v) for k, v in self.in_vehicle.items()))
+
+        return hash((
+            frozenset(self.packages),
+            frozenset(self.trucks),
+            frozenset(self.airplanes),
+            at_tuple,
+            in_vehicle_tuple
+        ))
 
     def __hash__(self):
         """Make state hashable for deduplication."""
