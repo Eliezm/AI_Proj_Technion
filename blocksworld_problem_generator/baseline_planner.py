@@ -1,10 +1,7 @@
 """
 Integration with Fast Downward baseline planner.
 
-Requirement #12: Run baseline planner and collect metadata.
-
-This version uses the robust two-step (Translate + Search) process
-adapted from the comprehensive evaluation framework.
+FIXED VERSION: Proper timeout enforcement with process termination guarantee.
 """
 
 import subprocess
@@ -13,6 +10,8 @@ import re
 import os
 import time
 import logging
+import signal
+import sys
 from typing import Optional, Dict, Any
 from pathlib import Path
 
@@ -20,42 +19,30 @@ logger = logging.getLogger(__name__)
 
 
 class FastDownwardRunner:
-    """Runs Fast Downward and extracts comprehensive metrics."""
+    """Runs Fast Downward with guaranteed timeout enforcement."""
 
-    def __init__(self, timeout: int = 600):
+    def __init__(self, timeout: int = 260):  # ← FIXED: Changed from 600 to 260
         """
         Initialize Fast Downward runner.
 
         Args:
-            timeout: Maximum time in seconds for the entire run
+            timeout: Maximum time in seconds for SEARCH PHASE ONLY (default: 260)
         """
         self.timeout = timeout
 
-        # --- MODIFICATION START ---
-        # Get the directory where this file (baseline_planner.py) is located
         script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        # Go one step up to the project root (where 'downward' and the code dir live)
         project_root = os.path.abspath(os.path.join(script_dir, ".."))
-
-        # Define the path to the 'downward/builds/release/bin' directory
         fd_bin_dir = os.path.join(project_root, "downward", "builds", "release", "bin")
 
-        # Detect OS and set binary path
         if os.name == 'nt':  # Windows
             self.fd_bin = os.path.join(fd_bin_dir, "downward.exe")
         else:  # Linux/macOS
             self.fd_bin = os.path.join(fd_bin_dir, "downward")
 
         self.fd_translate = os.path.join(fd_bin_dir, "translate", "translate.py")
-
-        # Place temp_dir in the project root as well
         self.temp_dir = os.path.join(project_root, "generation_temp")
-        # --- MODIFICATION END ---
-
         os.makedirs(self.temp_dir, exist_ok=True)
 
-        # Check if FD is available
         self.fd_available = self._check_fd_available()
 
     def _check_fd_available(self) -> bool:
@@ -83,24 +70,18 @@ class FastDownwardRunner:
             timeout: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Run Fast Downward on a problem using the 2-step translate/search process.
+        Run Fast Downward on a problem using 2-step translate/search process.
+
+        FIXED: Proper timeout enforcement for search phase.
 
         Args:
             domain_file: Path to domain PDDL file
             problem_file: Path to problem PDDL file
             search_config: Fast Downward search configuration string
-            timeout: Override default timeout
+            timeout: Maximum time in seconds for SEARCH PHASE ONLY
 
         Returns:
-            Dict with:
-                - success: bool (whether solution was found)
-                - time: float (total wall clock time in seconds)
-                - plan_cost: int or None (plan length)
-                - nodes_expanded: int or None (search nodes)
-                - nodes_generated: int or None (generated states)
-                - search_depth: int or None (search depth)
-                - plan: list or None (action strings if extracted)
-                - error: str or None (error message if failed)
+            Dict with search results and metrics
         """
         if not self.fd_available:
             return {
@@ -114,7 +95,13 @@ class FastDownwardRunner:
                 "error": "Fast Downward not installed or not found at expected paths"
             }
 
-        timeout_to_use = timeout if timeout is not None else self.timeout
+        # FIXED: Use provided timeout or fall back to self.timeout
+        search_timeout = timeout if timeout is not None else self.timeout
+        translate_timeout = 300
+
+        logger.info(f"[TIMEOUT CONFIG] Translate: {translate_timeout}s, Search: {search_timeout}s")
+
+        overall_start_time = time.time()
         problem_name = os.path.basename(problem_file)
         sas_file = os.path.join(self.temp_dir, "output.sas")
 
@@ -125,7 +112,6 @@ class FastDownwardRunner:
             logger.debug(f"[TRANSLATE] {problem_name}")
             translate_start = time.time()
 
-            # Use absolute paths
             abs_domain = os.path.abspath(domain_file)
             abs_problem = os.path.abspath(problem_file)
 
@@ -134,14 +120,27 @@ class FastDownwardRunner:
                 f'"{abs_problem}" --sas-file "{sas_file}"'
             )
 
-            translate_result = subprocess.run(
-                translate_cmd,
-                shell=True,
-                cwd=os.path.abspath(".."),
-                capture_output=True,
-                text=True,
-                timeout=timeout_to_use
-            )
+            try:
+                translate_result = subprocess.run(
+                    translate_cmd,
+                    shell=True,
+                    cwd=os.path.abspath(".."),
+                    capture_output=True,
+                    text=True,
+                    timeout=translate_timeout
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(f"[TRANSLATE TIMEOUT] Exceeded {translate_timeout}s for {problem_name}")
+                return {
+                    "success": False,
+                    "time": time.time() - overall_start_time,
+                    "plan_cost": None,
+                    "nodes_expanded": None,
+                    "nodes_generated": None,
+                    "search_depth": None,
+                    "plan": None,
+                    "error": f"Translate timeout (>{translate_timeout}s)"
+                }
 
             translate_time = time.time() - translate_start
 
@@ -150,7 +149,7 @@ class FastDownwardRunner:
                 logger.debug(f"[TRANSLATE] Failed: {error_msg[:200]}")
                 return {
                     "success": False,
-                    "time": translate_time,
+                    "time": time.time() - overall_start_time,
                     "plan_cost": None,
                     "nodes_expanded": None,
                     "nodes_generated": None,
@@ -163,7 +162,7 @@ class FastDownwardRunner:
                 logger.debug(f"[TRANSLATE] Failed: SAS file not created")
                 return {
                     "success": False,
-                    "time": translate_time,
+                    "time": time.time() - overall_start_time,
                     "plan_cost": None,
                     "nodes_expanded": None,
                     "nodes_generated": None,
@@ -172,31 +171,84 @@ class FastDownwardRunner:
                     "error": "Translate: SAS file not created"
                 }
 
-            logger.debug(f"[TRANSLATE] Success ({os.path.getsize(sas_file)} bytes)")
+            logger.debug(f"[TRANSLATE] Success ({os.path.getsize(sas_file)} bytes) in {translate_time:.2f}s")
 
             # ==========================================================
             # PHASE 2: SEARCH (SAS -> Plan)
+            # FIXED: Use robust subprocess handling to enforce timeout
             # ==========================================================
-            logger.debug(f"[SEARCH] Starting with config: {search_config}")
+            logger.debug(f"[SEARCH] Starting with config: {search_config}, timeout: {search_timeout}s")
             search_start = time.time()
 
-            search_cmd = f'"{self.fd_bin}" --search "{search_config}" < "{sas_file}"'
+            # FIXED: Use Popen + communicate for better timeout control
+            search_cmd_list = [
+                self.fd_bin,
+                "--search", search_config
+            ]
 
-            search_result = subprocess.run(
-                search_cmd,
-                shell=True,
-                cwd=os.path.dirname(self.fd_bin),
-                capture_output=True,
-                text=True,
-                timeout=timeout_to_use
-            )
+            try:
+                # Open SAS file for stdin
+                with open(sas_file, 'r') as sas_input:
+                    search_process = subprocess.Popen(
+                        search_cmd_list,
+                        stdin=sas_input,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        cwd=os.path.dirname(self.fd_bin)
+                    )
 
-            search_time = time.time() - search_start
-            total_time = translate_time + search_time
+                    try:
+                        stdout_text, stderr_text = search_process.communicate(timeout=search_timeout)
+                        search_returncode = search_process.returncode
+                    except subprocess.TimeoutExpired:
+                        # FIXED: Kill the process tree
+                        logger.warning(f"[SEARCH TIMEOUT] Killing process after {search_timeout}s")
+                        try:
+                            if sys.platform == 'win32':
+                                # Windows: use SIGKILL equivalent
+                                search_process.kill()
+                            else:
+                                # Unix: first try SIGTERM, then SIGKILL
+                                search_process.terminate()
+                                try:
+                                    search_process.wait(timeout=5)
+                                except subprocess.TimeoutExpired:
+                                    search_process.kill()
+                            search_process.wait()
+                        except Exception as e:
+                            logger.debug(f"Error terminating process: {e}")
 
-            output_text = search_result.stdout + search_result.stderr
+                        return {
+                            "success": False,
+                            "time": time.time() - overall_start_time,
+                            "plan_cost": None,
+                            "nodes_expanded": None,
+                            "nodes_generated": None,
+                            "search_depth": None,
+                            "plan": None,
+                            "error": f"Search timeout (>{search_timeout}s)"
+                        }
 
-            logger.debug(f"[SEARCH] Completed in {search_time:.2f}s")
+                search_time = time.time() - search_start
+                total_time = time.time() - overall_start_time
+
+                output_text = stdout_text + stderr_text
+
+                logger.debug(f"[SEARCH] Completed in {search_time:.2f}s (total: {total_time:.2f}s)")
+
+            except Exception as e:
+                logger.error(f"[SEARCH] Exception: {e}")
+                return {
+                    "success": False,
+                    "time": time.time() - overall_start_time,
+                    "plan_cost": None,
+                    "nodes_expanded": None,
+                    "nodes_generated": None,
+                    "search_depth": None,
+                    "plan": None,
+                    "error": f"Search error: {str(e)[:200]}"
+                }
 
             # Clean up SAS file
             try:
@@ -209,10 +261,9 @@ class FastDownwardRunner:
             # PHASE 3: PARSE OUTPUT
             # ==========================================================
 
-            # Check if solution was found
             solution_found = (
-                "Solution found" in output_text or
-                "Plan length:" in output_text
+                    "Solution found" in output_text or
+                    "Plan length:" in output_text
             )
 
             if not solution_found:
@@ -228,7 +279,6 @@ class FastDownwardRunner:
                     "error": "No solution found"
                 }
 
-            # Extract metrics
             metrics = self._parse_fd_output(output_text)
 
             logger.debug(
@@ -248,37 +298,11 @@ class FastDownwardRunner:
                 "error": None
             }
 
-        except subprocess.TimeoutExpired:
-            logger.warning(f"[TIMEOUT] Exceeded {timeout_to_use}s for {problem_name}")
-            return {
-                "success": False,
-                "time": timeout_to_use,
-                "plan_cost": None,
-                "nodes_expanded": None,
-                "nodes_generated": None,
-                "search_depth": None,
-                "plan": None,
-                "error": f"Timeout (>{timeout_to_use}s)"
-            }
-
-        except FileNotFoundError as e:
-            logger.error(f"[ERROR] File not found: {e}")
-            return {
-                "success": False,
-                "time": 0,
-                "plan_cost": None,
-                "nodes_expanded": None,
-                "nodes_generated": None,
-                "search_depth": None,
-                "plan": None,
-                "error": f"File not found: {str(e)[:200]}"
-            }
-
         except Exception as e:
-            logger.error(f"[ERROR] Exception: {e}")
+            logger.error(f"[ERROR] Unexpected exception: {e}")
             return {
                 "success": False,
-                "time": 0,
+                "time": time.time() - overall_start_time,
                 "plan_cost": None,
                 "nodes_expanded": None,
                 "nodes_generated": None,
@@ -289,15 +313,7 @@ class FastDownwardRunner:
 
     @staticmethod
     def _parse_fd_output(output_text: str) -> Dict[str, Any]:
-        """
-        Extract comprehensive metrics from Fast Downward output.
-
-        Args:
-            output_text: Combined stdout + stderr from FD
-
-        Returns:
-            Dict with extracted metrics
-        """
+        """Extract comprehensive metrics from Fast Downward output."""
         result = {
             "plan_cost": None,
             "nodes_expanded": None,
@@ -306,27 +322,22 @@ class FastDownwardRunner:
             "plan": None
         }
 
-        # Plan cost (use "Plan length")
         cost_match = re.search(r"Plan length:\s*(\d+)", output_text)
         if cost_match:
             result["plan_cost"] = int(cost_match.group(1))
 
-        # Nodes expanded (take last occurrence)
         nodes_expanded_matches = list(re.finditer(r"Expanded\s+(\d+)\s+state", output_text))
         if nodes_expanded_matches:
             result["nodes_expanded"] = int(nodes_expanded_matches[-1].group(1))
 
-        # Nodes generated (take last occurrence)
         nodes_generated_matches = list(re.finditer(r"Generated\s+(\d+)\s+state", output_text))
         if nodes_generated_matches:
             result["nodes_generated"] = int(nodes_generated_matches[-1].group(1))
 
-        # Search depth
         depth_match = re.search(r"Search depth:\s*(\d+)", output_text)
         if depth_match:
             result["search_depth"] = int(depth_match.group(1))
 
-        # Extract plan actions
         plan_section = re.search(
             r"Solution found\.\n(.*?)(?:Plan length:|$)",
             output_text,

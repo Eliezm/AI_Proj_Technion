@@ -45,12 +45,10 @@ import json
 import random
 import traceback
 import argparse
-import subprocess
-from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
 from datetime import datetime
 import numpy as np
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 # Setup paths
 sys.path.insert(0, os.getcwd())
@@ -350,7 +348,7 @@ def evaluate_on_test_set(
     print_section("PHASE 2: EVALUATION ON TEST SET")
 
     try:
-        from evaluation_comprehensive import (
+        from evaluation.evaluation_comprehensive import (
             EvaluationFramework,
             GNNPolicyRunner,
             BaselineRunner,

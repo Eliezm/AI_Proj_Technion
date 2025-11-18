@@ -44,10 +44,10 @@ class OverfitExperimentConfig:
     """Configuration for overfit experiment."""
 
     EXPERIMENT_NAME = "overfit_experiment"
-    OUTPUT_DIR = "overfit_experiment_results"
+    OUTPUT_DIR = "../overfit_experiment_results"
 
     # ✅ REFACTORED: Use new benchmark format
-    BENCHMARK_DIR = "benchmarks"  # New structure: domain/size/
+    BENCHMARK_DIR = "../benchmarks"  # New structure: domain/size/
     SIZES = ["small"]  # Only use small problems
     NUM_PROBLEMS = 5  # Use only 5 problems for overfitting
 

@@ -1,11 +1,5 @@
 """
 State representation for Logistics domain and state validation.
-
-A valid Logistics state consists of:
-- Objects (packages) at locations
-- Trucks and airplanes at locations
-- Objects potentially inside vehicles
-- Static map: in-city relations and airport designations
 """
 
 from typing import Set, Dict, Optional, Tuple, List
@@ -16,20 +10,17 @@ from dataclasses import dataclass, field
 class LogisticsState:
     """Represents a Logistics world state."""
 
-    # Entity collections
     packages: Set[str] = field(default_factory=set)
     trucks: Set[str] = field(default_factory=set)
     airplanes: Set[str] = field(default_factory=set)
     locations: Set[str] = field(default_factory=set)
     cities: Set[str] = field(default_factory=set)
 
-    # Dynamic facts
-    at: Dict[str, str] = field(default_factory=dict)  # object -> location
-    in_vehicle: Dict[str, str] = field(default_factory=dict)  # object -> vehicle
+    at: Dict[str, str] = field(default_factory=dict)
+    in_vehicle: Dict[str, str] = field(default_factory=dict)
 
-    # Static facts (map structure)
-    in_city: Dict[str, str] = field(default_factory=dict)  # location -> city
-    airports: Set[str] = field(default_factory=set)  # Set of airport locations
+    in_city: Dict[str, str] = field(default_factory=dict)
+    airports: Set[str] = field(default_factory=set)
 
     def copy(self) -> 'LogisticsState':
         """Create a deep copy of the state."""
@@ -45,12 +36,9 @@ class LogisticsState:
             airports=self.airports.copy()
         )
 
-    # state.py - COMPLETE REWRITE OF is_valid() METHOD
-
     def is_valid(self) -> Tuple[bool, Optional[str]]:
         """Enhanced validation with comprehensive checks."""
 
-        # FIX 0: Check basic structure
         if not self.packages:
             return False, "No packages"
         if not self.trucks:
@@ -128,7 +116,6 @@ class LogisticsState:
         for airport in self.airports:
             if airport not in self.locations:
                 return False, f"Airport {airport} not in locations set"
-            # Airport must be in some city
             if airport not in self.in_city:
                 return False, f"Airport {airport} not mapped to any city"
 
@@ -148,10 +135,9 @@ class LogisticsState:
             if vehicle not in self.at:
                 return False, f"Vehicle {vehicle} with no location"
 
-        # FIX 9: Consistency check - no object in two places [FIXED TYPO]
+        # FIX 9: Consistency check
         for obj in list(self.packages) + list(self.trucks) + list(self.airplanes):
             locations_count = 0
-
             if obj in self.at:
                 locations_count += 1
             if obj in self.in_vehicle:
@@ -160,42 +146,30 @@ class LogisticsState:
             if obj in self.packages and locations_count != 1:
                 return False, f"Package {obj} in {locations_count} places (not exactly 1)"
 
-        # FIX 10: Ensure at least one city has airports
-        cities_with_airports = set()
-        for airport in self.airports:
-            city = self.in_city.get(airport)
-            if city:
-                cities_with_airports.add(city)
+        # FIX 10: Airport distribution for inter-city
+        if len(self.cities) > 1:
+            cities_with_airports = set()
+            for airport in self.airports:
+                city = self.in_city.get(airport)
+                if city:
+                    cities_with_airports.add(city)
 
-        if len(self.cities) > 1 and len(cities_with_airports) < len(self.cities):
-            # If multiple cities, should have airports in most cities
-            if len(cities_with_airports) < max(1, len(self.cities) - 1):
-                return False, f"Insufficient airports for inter-city transport"
+            if len(cities_with_airports) < len(self.cities):
+                return False, f"Not all cities have airports (required for inter-city)"
 
         return True, None
 
+    # FIX #1: REMOVE DUPLICATE - KEEP ONLY THIS ONE __hash__ METHOD
     def __hash__(self):
-        """Make state hashable for deduplication - IMPROVED."""
-        # Hash only dynamic facts (what changes)
+        """Make state hashable for deduplication."""
         at_tuple = tuple(sorted((k, v) for k, v in self.at.items()))
-        in_vehicle_tuple = tuple(sorted((k, v) for k, v in self.in_vehicle.items()))
-
+        in_veh_tuple = tuple(sorted((k, v) for k, v in self.in_vehicle.items()))
         return hash((
             frozenset(self.packages),
             frozenset(self.trucks),
             frozenset(self.airplanes),
             at_tuple,
-            in_vehicle_tuple
-        ))
-
-    def __hash__(self):
-        """Make state hashable for deduplication."""
-        at_tuple = tuple(sorted((k, v) for k, v in self.at.items()))
-        in_veh_tuple = tuple(sorted((k, v) for k, v in self.in_vehicle.items()))
-        in_city_tuple = tuple(sorted((k, v) for k, v in self.in_city.items()))
-        return hash((
-            frozenset(self.at.items()),
-            frozenset(self.in_vehicle.items()),
+            in_veh_tuple,
             frozenset(self.airports)
         ))
 
@@ -204,13 +178,13 @@ class LogisticsState:
         if not isinstance(other, LogisticsState):
             return False
         return (
-                self.packages == other.packages and
-                self.trucks == other.trucks and
-                self.airplanes == other.airplanes and
-                self.at == other.at and
-                self.in_vehicle == other.in_vehicle and
-                self.in_city == other.in_city and
-                self.airports == other.airports
+            self.packages == other.packages and
+            self.trucks == other.trucks and
+            self.airplanes == other.airplanes and
+            self.at == other.at and
+            self.in_vehicle == other.in_vehicle and
+            self.in_city == other.in_city and
+            self.airports == other.airports
         )
 
     def __repr__(self):
@@ -233,25 +207,7 @@ def create_initial_state(
         at: Dict[str, str] = None,
         in_vehicle: Dict[str, str] = None
 ) -> LogisticsState:
-    """
-    Create a valid initial Logistics state.
-
-    All objects start at their designated locations.
-
-    Args:
-        packages: List of package names
-        trucks: List of truck names
-        airplanes: List of airplane names
-        locations: List of location names
-        cities: List of city names
-        in_city: Mapping of location -> city
-        airports: Set of airport location names
-        at: Optional mapping of object -> location (if None, will be empty)
-        in_vehicle: Optional mapping of object -> vehicle (if None, will be empty)
-
-    Returns:
-        Valid LogisticsState
-    """
+    """Create a valid initial Logistics state."""
 
     state = LogisticsState(
         packages=set(packages),

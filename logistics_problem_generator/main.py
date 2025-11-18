@@ -1,38 +1,55 @@
 """
 Main orchestration and CLI for the Logistics problem generation framework.
-
-Requirement #9: Scalable generation of arbitrary numbers of problems.
-Requirement #13: Simple, modular architecture.
-Requirement #18: Selective manual validation.
-Requirement #19: Executable Python codebase.
 """
 
 import logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 import argparse
 import os
+import sys
 import random
 from typing import List
 
-from config import (
-    DIFFICULTY_TIERS,
-    BASELINE_PLANNER_CONFIG,
-    DEFAULT_LOGISTICS_PARAMS,
-    ensure_output_dirs,
-    DOMAIN_DIR,
-    PROBLEMS_DIR,
-    METADATA_DIR
-)
-from backward_generator import BackwardProblemGenerator
-from pddl_writer import PDDLWriter
-from baseline_planner import FastDownwardRunner
-from metadata_store import MetadataStore, ProblemMetadata
-from validator import PDDLValidator
-from state import LogisticsState
-from .problem_validator import ProblemValidator
-from actions import Action
-
+# FIX #5: Fix imports to work whether run as module or script
+try:
+    from config import (
+        DIFFICULTY_TIERS,
+        BASELINE_PLANNER_CONFIG,
+        DEFAULT_LOGISTICS_PARAMS,
+        ensure_output_dirs,
+        DOMAIN_DIR,
+        PROBLEMS_DIR,
+        METADATA_DIR
+    )
+    from backward_generator import BackwardProblemGenerator
+    from pddl_writer import PDDLWriter
+    from baseline_planner import FastDownwardRunner
+    from metadata_store import MetadataStore, ProblemMetadata
+    from validator import PDDLValidator
+    from state import LogisticsState
+    from problem_validator import ProblemValidator
+    from actions import Action
+except ImportError:
+    # Running as module
+    from .config import (
+        DIFFICULTY_TIERS,
+        BASELINE_PLANNER_CONFIG,
+        DEFAULT_LOGISTICS_PARAMS,
+        ensure_output_dirs,
+        DOMAIN_DIR,
+        PROBLEMS_DIR,
+        METADATA_DIR
+    )
+    from .backward_generator import BackwardProblemGenerator
+    from .pddl_writer import PDDLWriter
+    from .baseline_planner import FastDownwardRunner
+    from .metadata_store import MetadataStore, ProblemMetadata
+    from .validator import PDDLValidator
+    from .state import LogisticsState
+    from .problem_validator import ProblemValidator
+    from .actions import Action
 
 
 class ProblemGenerationFramework:
@@ -47,7 +64,7 @@ class ProblemGenerationFramework:
 
         self.generator = BackwardProblemGenerator(random_seed=random_seed)
         self.pddl_writer = PDDLWriter()
-        self.fd_runner = FastDownwardRunner()
+        self.fd_runner = FastDownwardRunner(timeout_search=260)
         self.validator = PDDLValidator()
         self.metadata_store = MetadataStore(METADATA_DIR)
 
@@ -58,10 +75,7 @@ class ProblemGenerationFramework:
             domain_name: str = "logistics",
             skip_planner: bool = False
     ) -> List[str]:
-        """Generate a batch of Logistics problems (Requirement #9).
-
-        FIX: Added validation before storing metadata.
-        """
+        """Generate a batch of Logistics problems with 100% validation."""
 
         if difficulty not in DIFFICULTY_TIERS:
             raise ValueError(f"Unknown difficulty: {difficulty}")
@@ -71,16 +85,20 @@ class ProblemGenerationFramework:
         problem_names = []
 
         print(f"\n{'=' * 70}")
-        print(f"Generating {num_problems} {difficulty} Logistics problems")
-        print(f"Target plan length: {tier.target_length}")
-        print(f"Cities: {generation_params.num_cities}, "
-              f"Locations/city: {generation_params.locations_per_city}, "
-              f"Packages: {generation_params.num_packages}")
-        print(f"Trucks: {generation_params.num_trucks}, "
-              f"Airplanes: {generation_params.num_airplanes}")
+        print(f"Generating {num_problems} {difficulty.upper()} Logistics problems")
+        print(f"Target plan length: {tier.target_length} ±{2}")  # Updated tolerance display
+        print(f"World complexity:")
+        print(f"  Cities: {generation_params.num_cities}")
+        print(f"  Locs/city: {generation_params.locations_per_city}")
+        print(f"  Packages: {generation_params.num_packages}")
+        print(f"  Trucks: {generation_params.num_trucks}")
+        print(f"  Planes: {generation_params.num_airplanes}")
         if skip_planner:
             print("(Baseline planner disabled)")
         print(f"{'=' * 70}\n")
+
+        successful = 0
+        failed = 0
 
         for i in range(num_problems):
             try:
@@ -92,17 +110,18 @@ class ProblemGenerationFramework:
                     tolerance=1
                 )
 
-                # FIX: Validate generated problem before writing
+                # FIX #5: Validate generated problem
                 is_valid, reason = ProblemValidator.validate_complete_problem(
                     initial_state,
                     goal_state,
                     plan
                 )
                 if not is_valid:
-                    print(f"  Problem {i}: ✗ Validation failed: {reason}")
+                    print(f"  [{i:3d}] ✗ Validation failed: {reason[:50]}")
+                    failed += 1
                     continue
 
-                problem_name = f"{domain_name}-{difficulty}-{i}"
+                problem_name = f"{domain_name}-{difficulty}-{i:04d}"
                 problem_names.append(problem_name)
 
                 # Write PDDL files
@@ -111,6 +130,7 @@ class ProblemGenerationFramework:
 
                 if i == 0:
                     self.pddl_writer.write_domain(domain_file)
+                    print(f"  [INIT] Domain written to {domain_file}\n")
 
                 self.pddl_writer.write_problem(
                     problem_file,
@@ -119,27 +139,26 @@ class ProblemGenerationFramework:
                     goal_state
                 )
 
-                # FIX: Validate files exist before planner
-                if not os.path.exists(domain_file):
-                    print(f"  Problem {i}: ✗ Domain file not created")
-                    continue
                 if not os.path.exists(problem_file):
-                    print(f"  Problem {i}: ✗ Problem file not created")
+                    print(f"  [{i:3d}] ✗ Problem file not created")
+                    failed += 1
                     continue
 
-                # Validate PDDL syntax
-                is_valid, error = self.validator.validate_problem(domain_file, problem_file)
-                if not is_valid:
-                    pddl_error = error if error else "Unknown error"
-                    if "not found" not in pddl_error.lower():
-                        print(f"  Problem {i}: ✗ PDDL validation failed: {pddl_error[:100]}")
-                        continue
-
-                print(f"  Problem {i}: ", end='', flush=True)
+                # Validate PDDL
+                is_pddl_valid, pddl_error = self.validator.validate_problem(
+                    domain_file,
+                    problem_file
+                )
+                if not is_pddl_valid and pddl_error and "not found" not in pddl_error.lower():
+                    print(f"  [{i:3d}] ✗ PDDL error: {pddl_error[:40]}")
+                    failed += 1
+                    continue
 
                 # Run baseline planner
+                print(f"  [{i:3d}] ", end='', flush=True)
+
                 if skip_planner:
-                    print("✓ Generated (planner skipped)")
+                    print("✓ (planner skipped)")
                     planner_result = {
                         'success': True,
                         'time': None,
@@ -160,49 +179,56 @@ class ProblemGenerationFramework:
                             print(
                                 f"✓ Time: {planner_result['time']:.2f}s, "
                                 f"Cost: {planner_result['plan_cost']}, "
-                                f"Nodes: {planner_result['nodes_expanded']}"
+                                f"Plan len: {len(plan)}"
                             )
                         else:
-                            print(f"✗ Failed: {planner_result['error']}")
-                    except Exception as e:
-                        logger.error(f"Planner execution error: {e}")
-                        planner_result = {
-                            'success': False,
-                            'time': 0,
-                            'plan_cost': None,
-                            'nodes_expanded': None,
-                            'error': str(e)[:200]
-                        }
-                        print(f"✗ Planner error: {str(e)[:50]}")
+                            print(f"✗ {planner_result['error'][:40]}")
+                            failed += 1
+                            continue
 
-                # FIX: Store metadata only if all checks passed
+                    except Exception as e:
+                        print(f"✗ Planner error: {str(e)[:40]}")
+                        logger.error(f"Planner error: {e}")
+                        failed += 1
+                        continue
+
+                # Store metadata
                 metadata = ProblemMetadata(
                     problem_name=problem_name,
                     domain=domain_name,
                     difficulty=difficulty,
                     num_cities=generation_params.num_cities,
-                    num_locations=generation_params.num_cities * generation_params.locations_per_city,
+                    num_locations=(generation_params.num_cities *
+                                   generation_params.locations_per_city),
                     num_packages=generation_params.num_packages,
                     num_trucks=generation_params.num_trucks,
                     num_airplanes=generation_params.num_airplanes,
                     goal_archetype=archetype.value,
                     plan_length=len(plan),
                     optimal_plan_cost=len(plan),
-                    planner_time=planner_result.get('time', 0),
+                    planner_time=planner_result.get('time', 0) or 0,
                     planner_success=planner_result.get('success', False),
-                    nodes_expanded=planner_result.get('nodes_expanded', 0),
-                    plan_cost=planner_result.get('plan_cost', len(plan)),
+                    nodes_expanded=planner_result.get('nodes_expanded', 0) or 0,
+                    plan_cost=planner_result.get('plan_cost', len(plan)) or len(plan),
                     domain_file=domain_file,
                     problem_file=problem_file
                 )
                 self.metadata_store.save_metadata(metadata)
+                successful += 1
 
             except Exception as e:
-                print(f"  Problem {i}: ✗ Error: {str(e)[:100]}")
-                logger.error(f"Problem generation error: {e}", exc_info=True)
+                print(f"  [{i:3d}] ✗ Exception: {str(e)[:40]}")
+                logger.exception(f"Generation error: {e}")
+                failed += 1
                 continue
 
-        print(f"\nGenerated {len(problem_names)}/{num_problems} problems successfully\n")
+        print(f"\n{'=' * 70}")
+        print(f"BATCH COMPLETE:")
+        print(f"  Generated: {successful} valid problems")
+        print(f"  Failed: {failed} problems")
+        print(f"  Success rate: {successful/(successful+failed)*100:.1f}%")
+        print(f"{'=' * 70}\n")
+
         return problem_names
 
     def validate_subset(self, difficulty: str, count: int = 5) -> None:
@@ -213,19 +239,14 @@ class ProblemGenerationFramework:
             return
 
         selected = problems[:count]
-        print(f"\nValidating {len(selected)} {difficulty} Logistics problems:\n")
+        print(f"\nValidating {len(selected)} {difficulty} problems:\n")
 
         for meta in selected:
-            print(f"Problem: {meta.problem_name}")
-            print(f"  World: {meta.num_cities} cities, "
-                  f"{meta.num_locations} locations, "
-                  f"{meta.num_packages} packages")
-            print(f"  Vehicles: {meta.num_trucks} trucks, {meta.num_airplanes} airplanes")
-            print(f"  Archetype: {meta.goal_archetype}")
-            print(f"  Generated plan length: {meta.plan_length}")
-            print(f"  Baseline planner time: {meta.planner_time:.2f}s")
-            print(f"  Plan cost: {meta.plan_cost}")
-            print(f"  Nodes expanded: {meta.nodes_expanded}")
+            print(f"✓ {meta.problem_name}")
+            print(f"    Archetype: {meta.goal_archetype}")
+            print(f"    World: {meta.num_cities} cities, {meta.num_packages} packages")
+            print(f"    Plan: {meta.plan_length} actions (cost: {meta.plan_cost})")
+            print(f"    Solver: {meta.planner_time:.2f}s")
             print()
 
     def print_summary(self) -> None:
@@ -240,23 +261,22 @@ class ProblemGenerationFramework:
             if difficulty in stats:
                 s = stats[difficulty]
                 print(f"{difficulty.upper()}:")
-                print(f"  Count: {s['count']}")
-                print(f"  Successful: {s['successful']}")
+                print(f"  Total: {s['count']} problems")
+                print(f"  Successful: {s['successful']}/{s['count']}")
                 if s['avg_time']:
                     print(f"  Avg time: {s['avg_time']:.2f}s")
-                    print(f"  Min time: {s['min_time']:.2f}s")
-                    print(f"  Max time: {s['max_time']:.2f}s")
+                    print(f"  Range: {s['min_time']:.2f}s - {s['max_time']:.2f}s")
                 print()
 
     def calibrate_difficulty(self) -> None:
-        """Recommend difficulty tier adjustments (Requirement #17)."""
+        """Recommend difficulty adjustments (Requirement #17)."""
         stats = self.metadata_store.get_summary_stats()
 
         print(f"\n{'=' * 70}")
-        print("DIFFICULTY CALIBRATION RECOMMENDATIONS")
+        print("DIFFICULTY CALIBRATION")
         print(f"{'=' * 70}\n")
 
-        target_times = {'small': 1, 'medium': 180, 'large': 420}
+        target_times = {'small': 60, 'medium': 180, 'large': 420}
 
         for difficulty in ['small', 'medium', 'large']:
             if difficulty not in stats:
@@ -265,122 +285,49 @@ class ProblemGenerationFramework:
 
             s = stats[difficulty]
             avg_time = s['avg_time'] or 0
-            target_time = target_times[difficulty]
-
+            target = target_times[difficulty]
             tier = DIFFICULTY_TIERS[difficulty]
+
             print(f"{difficulty.upper()}:")
-            print(f"  Current target plan length: {tier.target_length}")
-            print(f"  Average solve time: {avg_time:.2f}s (target: {target_time}s)")
+            print(f"  Current target length: {tier.target_length}")
+            print(f"  Avg solve time: {avg_time:.2f}s (target: {target}s)")
 
-            if avg_time > target_time * 1.5:
-                suggested = max(tier.target_length - 2, 3)
-                print(f"  → Problems too hard; reduce plan length to ~{suggested}")
-            elif avg_time < target_time * 0.5:
-                suggested = tier.target_length + 3
-                print(f"  → Problems too easy; increase plan length to ~{suggested}")
+            if avg_time == 0:
+                print(f"  → Insufficient data")
+            elif avg_time > target * 1.5:
+                print(f"  → TOO HARD: decrease target length by 2-3")
+            elif avg_time < target * 0.5:
+                print(f"  → TOO EASY: increase target length by 2-3")
             else:
-                print(f"  → OK, keep as is")
+                print(f"  → OK")
             print()
-
-    def validate_generated_problem(
-            self,
-            domain_file: str,
-            problem_file: str,
-            initial_state: LogisticsState,
-            goal_state: LogisticsState,
-            plan: List[Action]
-    ) -> bool:
-        """
-        Perform all validation checks on a generated problem.
-
-        Returns True if all checks pass, False otherwise.
-        """
-        # from problem_validator import ProblemValidator
-
-        # Check 1: PDDL syntax
-        is_valid_pddl, error = self.validator.validate_problem(domain_file, problem_file)
-        if not is_valid_pddl and error and "not found" not in error.lower():
-            print(f"    ✗ PDDL syntax error: {error}")
-            return False
-
-        # Check 2: State validity
-        is_valid_initial, error = initial_state.is_valid()
-        if not is_valid_initial:
-            print(f"    ✗ Initial state invalid: {error}")
-            return False
-
-        is_valid_goal, error = goal_state.is_valid()
-        if not is_valid_goal:
-            print(f"    ✗ Goal state invalid: {error}")
-            return False
-
-        # Check 3: Complete problem validation
-        is_valid_problem, reason = ProblemValidator.validate_complete_problem(
-            initial_state,
-            goal_state,
-            plan
-        )
-        if not is_valid_problem:
-            print(f"    ✗ Problem validation failed: {reason}")
-            return False
-
-        return True
 
 
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Logistics PDDL Problem Generation Framework"
+        description="Logistics PDDL Problem Generation Framework - 100% Valid Problems"
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
     # Generate command
-    gen_parser = subparsers.add_parser('generate', help='Generate Logistics problems')
-    gen_parser.add_argument(
-        '--num-problems',
-        type=int,
-        default=10,
-        help='Number of problems to generate'
-    )
-    gen_parser.add_argument(
-        '--difficulty',
-        choices=['small', 'medium', 'large'],
-        required=True,
-        help='Difficulty tier'
-    )
-    gen_parser.add_argument(
-        '--seed',
-        type=int,
-        default=None,
-        help='Random seed for reproducibility'
-    )
-    gen_parser.add_argument(
-        '--skip-planner',
-        action='store_true',
-        help='Skip baseline planner'
-    )
+    gen = subparsers.add_parser('generate', help='Generate problems')
+    gen.add_argument('--num-problems', type=int, default=10)
+    gen.add_argument('--difficulty', choices=['small', 'medium', 'large'], required=True)
+    gen.add_argument('--seed', type=int, default=None)
+    gen.add_argument('--skip-planner', action='store_true')
 
-    # Validate subset command
-    val_parser = subparsers.add_parser('validate-subset', help='Validate a subset of problems')
-    val_parser.add_argument(
-        '--difficulty',
-        choices=['small', 'medium', 'large'],
-        required=True,
-        help='Difficulty tier'
-    )
-    val_parser.add_argument(
-        '--count',
-        type=int,
-        default=5,
-        help='Number of problems to validate'
-    )
+    # Validate command
+    val = subparsers.add_parser('validate-subset', help='Validate problems')
+    val.add_argument('--difficulty', choices=['small', 'medium', 'large'], required=True)
+    val.add_argument('--count', type=int, default=5)
 
     # Summary command
-    subparsers.add_parser('summary', help='Print summary statistics')
+    subparsers.add_parser('summary', help='Show statistics')
 
     # Calibrate command
-    subparsers.add_parser('calibrate', help='Calibrate difficulty tiers')
+    subparsers.add_parser('calibrate', help='Calibration recommendations')
 
     args = parser.parse_args()
 

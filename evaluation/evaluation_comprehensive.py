@@ -207,8 +207,8 @@ class BaselineRunner:
 
     def __init__(self, timeout_sec: int = 300):
         self.timeout_sec = timeout_sec
-        self.fd_bin = os.path.abspath("downward/builds/release/bin/downward.exe")
-        self.fd_translate = os.path.abspath("downward/builds/release/bin/translate/translate.py")
+        self.fd_bin = os.path.abspath("../downward/builds/release/bin/downward.exe")
+        self.fd_translate = os.path.abspath("../downward/builds/release/bin/translate/translate.py")
 
         if not os.path.exists(self.fd_bin) or not os.path.exists(self.fd_translate):
             raise FileNotFoundError("Fast Downward binary not found")
@@ -231,7 +231,7 @@ class BaselineRunner:
                 f'python "{self.fd_translate}" "{os.path.abspath(domain_file)}" '
                 f'"{os.path.abspath(problem_file)}" --sas-file "{sas_file}"',
                 shell=True,
-                cwd=os.path.abspath("."),
+                cwd=os.path.abspath(".."),
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_sec
@@ -516,7 +516,7 @@ class GNNPolicyRunner:
         search_depth = 0
         solution_found = False
 
-        log_file = os.path.join("downward", "fd_output", "log.txt")
+        log_file = os.path.join("../downward", "fd_output", "log.txt")
 
         if not os.path.exists(log_file):
             return plan_cost, expansions, nodes_expanded, search_depth, solution_found

@@ -59,7 +59,7 @@ class ProblemGenerationFramework:
             num_blocks: int = 4,
             domain_name: str = "blocksworld",
             skip_planner: bool = False,
-            timeout: int = BASELINE_PLANNER_CONFIG['timeout']  # <-- ADD THIS
+            timeout: Optional[int] = None  # <-- ADD THIS
     ) -> List[str]:
         """Generate a batch of problems (Requirement #9)."""
 
@@ -67,12 +67,19 @@ class ProblemGenerationFramework:
             raise ValueError(f"Unknown difficulty: {difficulty}")
 
         tier = DIFFICULTY_TIERS[difficulty]
+
+        # FIXED: Ensure timeout is set
+        if timeout is None:
+            timeout = BASELINE_PLANNER_CONFIG['timeout']
+
+
         problem_names = []
 
         print(f"\n{'=' * 70}")
         print(f"Generating {num_problems} {difficulty} problems")
         print(f"Target plan length: {tier.target_length}")
         print(f"Number of blocks: {num_blocks}")
+        print(f"Planner timeout: {timeout} seconds per problem")  # ADDED
         if skip_planner:
             print("(Baseline planner disabled)")
         print(f"{'=' * 70}\n")
@@ -256,6 +263,9 @@ class ProblemGenerationFramework:
             print()
 
 
+
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -318,6 +328,30 @@ def main():
         help='Number of problems to validate'
     )
 
+    # NEW: Generate by time command
+    time_parser = subparsers.add_parser(
+        'generate-by-time',
+        help='Generate problems targeting specific solving time'
+    )
+    time_parser.add_argument(
+        '--difficulty',
+        choices=['small', 'medium', 'large'],
+        required=True,
+        help='Difficulty tier'
+    )
+    time_parser.add_argument(
+        '--count',
+        type=int,
+        default=20,
+        help='Number of problems to generate (default: 20)'
+    )
+    time_parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Random seed for reproducibility'
+    )
+
     # Summary command
     subparsers.add_parser('summary', help='Print summary statistics')
 
@@ -335,6 +369,8 @@ def main():
 
     # Execute command
     if args.command == 'generate':
+        print(f"Timeout per problem: {args.timeout}s")  # ✓ Show what we're using
+
         framework.generate_batch(
             num_problems=args.num_problems,
             difficulty=args.difficulty,
@@ -343,6 +379,29 @@ def main():
             timeout=args.timeout  # <-- ADD THIS LINE
         )
         framework.print_summary()
+
+    # NEW: Time-based generation command
+    elif args.command == 'generate-by-time':
+        from time_based_generator import TimeBasedProblemGenerator
+
+        generator = TimeBasedProblemGenerator(
+            difficulty=args.difficulty,
+            domain_dir=DOMAIN_DIR,
+            problems_dir=PROBLEMS_DIR,
+            metadata_dir=METADATA_DIR,
+            random_seed=args.seed
+        )
+
+        # Calibration phase
+        if generator.calibrate():
+            # Generation phase
+            generator.generate_batch(target_count=args.count)
+
+            # Summary
+            framework.print_summary()
+        else:
+            print("✗ Calibration failed. Adjust TIME_DIFFICULTY_TIERS in config.py")
+            sys.exit(1)
 
     elif args.command == 'validate-subset':
         framework.validate_subset(

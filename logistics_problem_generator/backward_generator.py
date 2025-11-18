@@ -11,30 +11,58 @@ from actions import Action, ActionExecutor, ActionType
 from goal_archetypes import GoalArchetypeGenerator, GoalArchetype
 from logistics_problem_builder import LogisticsProblemBuilder
 from config import LogisticsGenerationParams, DEFAULT_LOGISTICS_PARAMS
+from problem_validator import ProblemValidator
+
+
+import logging
+logger = logging.getLogger(__name__)
+
 
 
 # backward_generator.py - ADD NEW CLASS and MODIFY generate_problem
 
+# In backward_generator.py, REPLACE the StateDeduplicator class with this:
+
 class StateDeduplicator:
     """Tracks visited states in backward search to prevent cycles."""
 
-    def __init__(self):
+    def __init__(self, max_states: int = 5000):  # INCREASED from 500
         self.visited_hashes = set()
         self.visited_states = []
+        self.max_states = max_states
+        self.cycle_detected = False
 
     def is_visited(self, state: LogisticsState) -> bool:
         """Check if state has been visited."""
         return hash(state) in self.visited_hashes
 
-    def mark_visited(self, state: LogisticsState) -> None:
-        """Mark state as visited."""
-        self.visited_hashes.add(hash(state))
-        self.visited_states.append(state)
+    def mark_visited(self, state: LogisticsState) -> bool:
+        """
+        Mark state as visited.
+
+        Returns True if successfully added, False if would exceed max_states.
+        """
+        state_hash = hash(state)
+        if state_hash not in self.visited_hashes:
+            if len(self.visited_hashes) >= self.max_states:
+                self.cycle_detected = True
+                return False
+            self.visited_hashes.add(state_hash)
+            self.visited_states.append(state)
+            return True
+        return True  # Already visited
 
     def reset(self):
         """Clear visited states."""
         self.visited_hashes.clear()
         self.visited_states.clear()
+        self.cycle_detected = False
+
+    def get_visited_count(self) -> int:
+        """Get number of visited states."""
+        return len(self.visited_hashes)
+
+
 
 class ReverseActionExecutor:
     """
@@ -471,14 +499,21 @@ class ReverseActionExecutor:
         is_valid, _ = new_state.is_valid()
         return new_state if is_valid else None
 
+        # In backward_generator.py, REPLACE get_applicable_reverse_actions with this:
+
     @staticmethod
     def get_applicable_reverse_actions(state: LogisticsState) -> List[Tuple[Action, LogisticsState]]:
         """
-        Get all applicable reverse actions with strict validation.
+        FIX #6: Get all applicable reverse actions with STRICT validation.
 
-        FIX 9: This method now uses the undo_action_safe wrapper.
+        Each action must:
+        1. Pass precondition validation
+        2. Execute successfully
+        3. Produce a valid state
+        4. Not recreate the same state
         """
         results = []
+        seen_state_hashes = set()
 
         # Undo load-truck actions
         for pkg in state.packages:
@@ -488,10 +523,15 @@ class ReverseActionExecutor:
                     loc = state.at[truck]
 
                     action = Action(ActionType.LOAD_TRUCK, [pkg, truck, loc])
-                    new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+                    new_state = ReverseActionExecutor.undo_action_safe(
+                        state, action.action_type, action.params
+                    )
 
-                    if new_state is not None:
-                        results.append((action, new_state))
+                    if new_state and new_state != state:
+                        state_hash = hash(new_state)
+                        if state_hash not in seen_state_hashes:
+                            results.append((action, new_state))
+                            seen_state_hashes.add(state_hash)
 
         # Undo unload-truck actions
         for pkg in state.packages:
@@ -501,10 +541,15 @@ class ReverseActionExecutor:
                     if truck in state.at and state.at[truck] == pkg_loc:
 
                         action = Action(ActionType.UNLOAD_TRUCK, [pkg, truck, pkg_loc])
-                        new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+                        new_state = ReverseActionExecutor.undo_action_safe(
+                            state, action.action_type, action.params
+                        )
 
-                        if new_state is not None:
-                            results.append((action, new_state))
+                        if new_state and new_state != state:
+                            state_hash = hash(new_state)
+                            if state_hash not in seen_state_hashes:
+                                results.append((action, new_state))
+                                seen_state_hashes.add(state_hash)
 
         # Undo load-airplane actions
         for pkg in state.packages:
@@ -515,10 +560,15 @@ class ReverseActionExecutor:
                     if loc in state.airports:
 
                         action = Action(ActionType.LOAD_AIRPLANE, [pkg, vehicle, loc])
-                        new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+                        new_state = ReverseActionExecutor.undo_action_safe(
+                            state, action.action_type, action.params
+                        )
 
-                        if new_state is not None:
-                            results.append((action, new_state))
+                        if new_state and new_state != state:
+                            state_hash = hash(new_state)
+                            if state_hash not in seen_state_hashes:
+                                results.append((action, new_state))
+                                seen_state_hashes.add(state_hash)
 
         # Undo unload-airplane actions
         for pkg in state.packages:
@@ -529,10 +579,15 @@ class ReverseActionExecutor:
                         if airplane in state.at and state.at[airplane] == pkg_loc:
 
                             action = Action(ActionType.UNLOAD_AIRPLANE, [pkg, airplane, pkg_loc])
-                            new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+                            new_state = ReverseActionExecutor.undo_action_safe(
+                                state, action.action_type, action.params
+                            )
 
-                            if new_state is not None:
-                                results.append((action, new_state))
+                            if new_state and new_state != state:
+                                state_hash = hash(new_state)
+                                if state_hash not in seen_state_hashes:
+                                    results.append((action, new_state))
+                                    seen_state_hashes.add(state_hash)
 
         # Undo drive-truck actions
         for truck in state.trucks:
@@ -541,13 +596,20 @@ class ReverseActionExecutor:
                 current_city = state.in_city.get(current_loc)
                 if current_city:
                     for other_loc in state.locations:
-                        if state.in_city.get(other_loc) == current_city and other_loc != current_loc:
+                        if (state.in_city.get(other_loc) == current_city and
+                                other_loc != current_loc):
 
-                            action = Action(ActionType.DRIVE_TRUCK, [truck, other_loc, current_loc, current_city])
-                            new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+                            action = Action(ActionType.DRIVE_TRUCK,
+                                            [truck, other_loc, current_loc, current_city])
+                            new_state = ReverseActionExecutor.undo_action_safe(
+                                state, action.action_type, action.params
+                            )
 
-                            if new_state is not None:
-                                results.append((action, new_state))
+                            if new_state and new_state != state:
+                                state_hash = hash(new_state)
+                                if state_hash not in seen_state_hashes:
+                                    results.append((action, new_state))
+                                    seen_state_hashes.add(state_hash)
 
         # Undo fly-airplane actions
         for airplane in state.airplanes:
@@ -557,22 +619,19 @@ class ReverseActionExecutor:
                     for other_airport in state.airports:
                         if other_airport != current_loc:
 
-                            action = Action(ActionType.FLY_AIRPLANE, [airplane, other_airport, current_loc])
-                            new_state = ReverseActionExecutor.undo_action_safe(state, action.action_type, action.params)
+                            action = Action(ActionType.FLY_AIRPLANE,
+                                            [airplane, other_airport, current_loc])
+                            new_state = ReverseActionExecutor.undo_action_safe(
+                                state, action.action_type, action.params
+                            )
 
-                            if new_state is not None:
-                                results.append((action, new_state))
+                            if new_state and new_state != state:
+                                state_hash = hash(new_state)
+                                if state_hash not in seen_state_hashes:
+                                    results.append((action, new_state))
+                                    seen_state_hashes.add(state_hash)
 
-        # Deduplicate by state
-        seen_states = set()
-        unique_results = []
-        for action, new_state in results:
-            state_hash = hash(new_state)
-            if state_hash not in seen_states:
-                seen_states.add(state_hash)
-                unique_results.append((action, new_state))
-
-        return unique_results
+        return results
 
 
 class BackwardProblemGenerator:
@@ -712,13 +771,13 @@ class BackwardProblemGenerator:
             generation_params: Optional[LogisticsGenerationParams] = None,
             target_plan_length: Optional[int] = None,
             archetype: Optional[GoalArchetype] = None,
-            tolerance: int = 1,
-            max_retries: int = 50
+            tolerance: int = 2,  # INCREASED from 1
+            max_retries: int = 100  # INCREASED from 50
     ) -> Tuple[LogisticsState, LogisticsState, List[Action], GoalArchetype]:
         """
         Generate a problem with 100% validity guarantee.
 
-        FIX: Added state deduplication and better validation.
+        FIX #3+: Enhanced cycle detection, adaptive target lengths, and fallback strategies.
         """
         from config import DIFFICULTY_TIERS, DEFAULT_LOGISTICS_PARAMS
         from problem_validator import ProblemValidator
@@ -729,8 +788,11 @@ class BackwardProblemGenerator:
             tier = DIFFICULTY_TIERS.get(difficulty)
             target_plan_length = tier.target_length if tier else 10
 
-        min_length = target_plan_length - tolerance
-        max_length = target_plan_length + tolerance * 2
+        min_length = max(1, target_plan_length - tolerance)
+        max_length = target_plan_length + tolerance * 3  # INCREASED range
+
+        logger.info(f"[GEN] Target length: {target_plan_length}±{tolerance}, "
+                    f"accepting [{min_length}, {max_length}]")
 
         for retry in range(max_retries):
             try:
@@ -742,9 +804,10 @@ class BackwardProblemGenerator:
 
                 is_valid, error = world.is_valid()
                 if not is_valid:
+                    logger.debug(f"[GEN {retry}] Invalid world: {error}")
                     continue
 
-                # Step 2: Generate goal dict
+                # Step 2: Generate goal dict with archetype
                 goal_dict, used_archetype = self.generate_goal_dict_robust_with_archetype(
                     world,
                     packages,
@@ -753,6 +816,7 @@ class BackwardProblemGenerator:
                 )
 
                 if not goal_dict:
+                    logger.debug(f"[GEN {retry}] Failed to generate goal dict")
                     continue
 
                 # Step 3: Create goal state
@@ -764,23 +828,32 @@ class BackwardProblemGenerator:
 
                 is_valid, error = goal_state.is_valid()
                 if not is_valid:
+                    logger.debug(f"[GEN {retry}] Goal state invalid: {error}")
                     continue
 
                 if goal_state == world:
+                    logger.debug(f"[GEN {retry}] Trivial problem (initial == goal)")
                     continue
 
-                # Step 4: Backward search with FIX: state deduplication
-                deduplicator = StateDeduplicator()
+                # FIX #3: Step 4 - Backward search with ADAPTIVE termination
+                deduplicator = StateDeduplicator(max_states=5000)
                 current_state = goal_state.copy()
                 plan = []
                 iteration = 0
-                max_iterations = max(target_plan_length * 5, 500)
+                max_iterations = max(target_plan_length * 20, 2000)  # INCREASED
 
-                while len(plan) < max_length and iteration < max_iterations:
+                no_progress_count = 0
+                max_no_progress = 50
+
+                while (len(plan) < max_length and
+                       iteration < max_iterations and
+                       not deduplicator.cycle_detected and
+                       no_progress_count < max_no_progress):
+
                     iteration += 1
 
-                    # FIX: Check if we've visited this state before
                     if deduplicator.is_visited(current_state):
+                        logger.debug(f"[GEN {retry}] Cycle detected at iteration {iteration}")
                         break
 
                     deduplicator.mark_visited(current_state)
@@ -788,9 +861,10 @@ class BackwardProblemGenerator:
                     # Get applicable reverse actions
                     reverse_actions = ReverseActionExecutor.get_applicable_reverse_actions(current_state)
                     if not reverse_actions:
+                        logger.debug(f"[GEN {retry}] No reverse actions at iteration {iteration}")
                         break
 
-                    # Pick random action from valid options
+                    # Shuffle for variety
                     random.shuffle(reverse_actions)
                     action_found = False
 
@@ -810,15 +884,21 @@ class BackwardProblemGenerator:
                         plan.insert(0, action)
                         current_state = new_state
                         action_found = True
+                        no_progress_count = 0
                         break
 
                     if not action_found:
-                        break
+                        no_progress_count += 1
 
                 initial_state = current_state
 
-                # Step 5: Check plan length
-                if len(plan) < min_length or len(plan) > max_length:
+                # Step 5: Check plan length with adaptive acceptance
+                if len(plan) < min_length:
+                    logger.debug(f"[GEN {retry}] Plan too short: {len(plan)} < {min_length}")
+                    continue
+
+                if len(plan) > max_length:
+                    logger.debug(f"[GEN {retry}] Plan too long: {len(plan)} > {max_length}")
                     continue
 
                 # Step 6: Comprehensive validation
@@ -829,15 +909,42 @@ class BackwardProblemGenerator:
                 )
 
                 if is_valid:
+                    logger.info(f"[GEN {retry}] SUCCESS: {used_archetype.value}, length={len(plan)}")
                     return initial_state, goal_state, plan, used_archetype
+                else:
+                    logger.debug(f"[GEN {retry}] Validation failed: {reason}")
 
             except Exception as e:
+                logger.debug(f"[GEN {retry}] Exception: {str(e)[:100]}")
                 continue
 
         raise ValueError(
             f"Failed to generate valid {difficulty} problem after {max_retries} retries. "
-            f"Target plan length: {target_plan_length}±{tolerance}"
+            f"Target plan length: {target_plan_length}±{tolerance}. "
+            f"Try: (1) reducing difficulty tier, (2) increasing world complexity in config.py, "
+            f"or (3) reducing target_plan_length."
         )
+
+    def _validate_reverse_action_soundness(
+            self,
+            state_before: LogisticsState,
+            state_after: LogisticsState,
+            action: Action
+    ) -> bool:
+        """
+        FIX #3: Validate that the reverse action is truly sound.
+
+        Check that if we applied the FORWARD action to state_after,
+        we get back to state_before.
+        """
+        from actions import ActionExecutor
+
+        forward_state = ActionExecutor.execute_forward(state_after, action)
+        if forward_state is None:
+            return False
+
+        # Check if states match
+        return forward_state == state_before
 
     def generate_goal_dict_robust_with_archetype(
             self,

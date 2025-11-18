@@ -42,7 +42,7 @@ class CurriculumLearningConfig:
     OUTPUT_DIR = "curriculum_learning_results"
 
     # ✅ REFACTORED: Use new benchmark format
-    BENCHMARK_DIR = "benchmarks"
+    BENCHMARK_DIR = "../benchmarks"
     CURRICULUM_SEQUENCE = ["small", "medium", "large"]
     TEST_SIZES = ["small", "medium", "large"]
     MAX_PROBLEMS_PER_SIZE = 5
