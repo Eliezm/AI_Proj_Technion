@@ -1,0 +1,154 @@
+30 small BW problems
+30 medium BW problems
+30 large BW problems
+
+30 small Logistics problems
+30 medium Logistics problems
+30 large Logistics problems
+
+Two domains are enough.
+
+We can do a little experiment about the invariant of the models for domains (or train on both domains together?) - or
+train on BW and test on Logistics, and the opposite.
+
+-An experiment for overfit (for each difficutly)
+- An actual learning experiment (for each difficulty)
+- A scalability in size experiment
+- Training on problems from all sizes (curriculum) and evaluating the results
+
+How many experiments overall?
+
+Are the sizes / difficulty of the problems correct? (0.5 to 2 minutes for small problems, 2-4 minutes for medium
+problems and 4-7 minutes for large problems using a baseline planner with lm-cut heuristic to solve it?)
+Is the configuration of the GNN good for the expriments for our paper?
+How will the process and experiments work? Where will the models get saved?
+How do you perform the training on 20 problems?
+How do you divide the data to test and train sets in the correct way?
+How many baseline problems of IPC can our GNN solve?
+
+*** WE SHOULD COUNT A RANDOM MERGE STRATEGY POLICY AS A REFERENCE! ***
+*** WE SHOULD COUNT A RANDOM MERGE STRATEGY POLICY AS A REFERENCE! ***
+*** WE SHOULD COUNT A RANDOM MERGE STRATEGY POLICY AS A REFERENCE! ***
+*** WE SHOULD MAYBE SEED 3 DIFFERENT RANDOM STRATEGIES, TO SHOW NO COINCIDENTAL IMPROVEMENT! ***
+*** ARE WE BETTER THAN RANDOMLY MERGING? DID WE LEARN ANYTHING? ***
+
+*** MAYBE WE CAN ANALYZE INFERENCE TIME AGAINST PROBLEM SIZE TO PROJECT HOW MUCH TIME IT TAKES TO INFER FOR 50
+    VARIABLE PROBLEMS, 100 VARIABLE PROBLEMS, ETC ***
+
+*** WE NEED TO RUN OUR GNN MERGE STRATEGY AGAINST THE IPC PROBLEMS, WHEN RUNNING ON ONE SIDE THE LM-CUT BASELINE,
+    AND OUR GNN M&S STRATEGY ON THE OTHER, AND RANDOM M&S STRATEGY ON THE THIRD SIDE, TO SEE REAL IPC BASELINE PROBLEMS
+    BENCHMARKS THAT "MATTER" ***
+
+*** WHICH SHRINKING HYPER PARAMETERS AND OTHER M&S ALGORITHM HYPER PARAMETERS SHOULD WE FIX??? ***
+
+*** CREATE META DATA ABOUT THE MERGING PROCESS SO WE CAN BRING EXPLAINABILITY TO OUR MERGING STRATEGY ***
+
+*** UNDERSTAND WITH META DATA OR FEATURE ANALYSIS WHY CERTAIN MERGE CHOICES ARE MADE AND WHY ARE THEY GOOD ***
+
+*** ANALYZE PROBLEM STRUCTURE AND HOW THE M&S STRATEGY CAN BE INTERPRETED AS A HEURISTIC FOR SOLVING IT ***
+
+*** WHAT MAKES A GOOD MERGE AND SHRINK STRATEGY? ***
+
+*** IS THERE AN ***OPTIMAL*** MERGE AND SHRINK STRATEGY? ***
+
+*** RESEARCH PROJECT : HOW EXACTLY THE "REPRESENTATION LINEARLY" IS INSIDE THE LINEARIZER FRAMEWORK? ***
+*** HOW THE WEIGHTS OF A NETWORK SHOULD REVEAL INTERESTING FEATURES? MAYBE IT IS NOT HOW IT WORKS REALLY? ***
+*** MAYBE THE LATENT SPACES OF X, Y OF THE FUNCTIONS OF THE LINEARIZER FRAMEWORKS ARE ABLE TO PROVIDE THIS EXPLAINABILITY? ***
+
+*** WHAT MAKES A PROBLEM DIFFICULT FOR A CERTAIN HEURISTIC? DOES ONE HEURISTIC IS BETTER FOR A SPECIFIC PROBLEM THAN ANOTHER? ***
+
+*** We can also test on "very easy" problems to make sure our GNN doesn't do worse, on easy quick baseline problems. ***
+
+*** WE CAN ALSO MAKE A BRUTE FORCE EVALUATION OF OUR NETWORK!!!
+    HOW?
+    WE WOULD GENERATE... 500 problems, on all difficulty levels, those will be our test benchmark set.
+    We would run our baselines on them, and the GNN learned policy on them, and test how many problems each of the
+    methods has succeeded in solving, which is also an informative test!!!
+***
+
+
+Is our evaluation framework correct for our paper? can we add many more rich, informational and research and investigating
+outlooks on the project, results, framework?
+
+Validate and make sure that 100% the framework for training can run on 20 (or N) number of training problems and thousands -
+maybe 100000 time stamps of training?
+
+We need to decide - how much to train? what is the length of the training that is correct and enough?
+
+Is our reward function correct? Is there a better way, before running on the server for days?
+
+Make sure about all framework files, in order + diagram of each file, and how the interplay between all files is.
+
+Make sure compatability of running on the environment of the server.
+
+Make sure reproducibility of results.
+
+Make sure time estimation of our expriments in real time (maybe tqdm?) or other way.
+
+Minimize logging info printing in the training process, we want it saved for later analysis in the log file
+
+A whole framework to analyze the logs after training!
+
+Preparing a set of commands we will run on the server.
+
+Preparing the Github repository, for which we will clone, and then build downward from, and then we will run multiple
+experiment in parallel on our servers.
+
+Understanding which resources we need to dedicate (from the server) for the mission. Assuming we have 250GB ram, and 380 cores processor,
+and a graphics card.
+
+Writing in order all the files, the experiments and the commands we will run.
+
+
+*** We need to adjust our logistics domain generator to be able to take arguments such as number of... trucks, planes, packages,
+    this should be a proxy to how "difficult" a problem is? more variables, more complexity.
+
+    num_cities: int
+    locations_per_city: int
+    num_packages: int
+    num_trucks: int
+    num_airplanes: int
+    prob_airport: float
+
+    It needs to be flexible, because we don't want the same exact problem structure for this domain. We want our problem
+    generation to be varied, and valid, to train our GNN to be robust when it chooses merge strategies, and not overfit on a
+    single set configuration of logistics problems.
+
+    ***
+
+
+┌─────────────────────────────────────────────────────────────┐
+│                    4 EXPERIMENTS                              │
+├─────────────────────────────────────────────────────────────┤
+│ 1. OVERFIT EXPERIMENT (experiment_1_problem_overfit.py)     │
+│    └─ Train on 5 problems from same domain                  │
+│    └─ Test on same 5 problems                               │
+│    └─ Output: overfit_experiment_results/                   │
+│                                                              │
+│ 2. PROBLEM GENERALIZATION (experiment_2_problem_gen.py)    │
+│    └─ Train on 80% of problems from domain                  │
+│    └─ Test on 20% of different problems                     │
+│    └─ Output: problem_generalization_results/              │
+│                                                              │
+│ 3. SCALE GENERALIZATION (experiment_3_scale_gen.py)        │
+│    └─ Train on small+medium problems                        │
+│    └─ Test on medium+large problems                         │
+│    └─ Output: scale_generalization_results/                │
+│                                                              │
+│ 4. CURRICULUM LEARNING (experiment_4_curriculum.py)        │
+│    └─ Train: small → medium → large (progressive)          │
+│    └─ Validate on large problems                           │
+│    └─ Output: curriculum_learning_results/                 │
+└─────────────────────────────────────────────────────────────┘
+
+              ↓ (All experiments)
+
+┌─────────────────────────────────────────────────────────────┐
+│           EVALUATION & VISUALIZATION                        │
+├─────────────────────────────────────────────────────────────┤
+│ run_full_evaluation.py                                      │
+│  ├─ Run comprehensive evaluation                           │
+│  ├─ Compare against baselines (FD_LM-Cut, etc.)           │
+│  ├─ Generate 10+ plots                                     │
+│  └─ Produce final report                                   │
+└─────────────────────────────────────────────────────────────┘
