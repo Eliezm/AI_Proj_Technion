@@ -184,6 +184,11 @@ class MergeEnv(gym.Env):
         os.makedirs("logs", exist_ok=True)
         self.log_path = f"logs/run_{timestamp}.jsonl"
 
+        # ✅ NEW: GNN METADATA COLLECTION
+        self.gnn_metadata_dir = os.path.join("downward", "gnn_metadata")
+        os.makedirs(self.gnn_metadata_dir, exist_ok=True)
+        self.gnn_decisions_log = []  # Collect all GNN decisions in episode
+
         # ✅ Initialize observation tracking
         self.prev_total_states = 0
         self.max_vars = 1
@@ -286,6 +291,11 @@ class MergeEnv(gym.Env):
                     cg_path = os.path.join(toy_dir, cg_file)
                 else:
                     raise RuntimeError("Handshake with FD failed and debug mode is off")
+
+        # ✅ ADD: Export metadata from previous episode
+        if self.gnn_decisions_log:
+            self._export_episode_metadata()
+            self.gnn_decisions_log = []
 
         self.current_merge_step = 0
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -756,6 +766,8 @@ class MergeEnv(gym.Env):
             logger.info(f"  Returning: obs, reward={reward:.4f}, done={done}, info")
             logger.info("=" * 90 + "\n")
 
+
+
             return obs, reward, done, False, info
 
         except Exception as e:
@@ -1154,6 +1166,19 @@ class MergeEnv(gym.Env):
             # ====================================================================
             # PHASE 12: RETURN
             # ====================================================================
+
+            # In MergeEnv.step(), after computing reward:
+
+            # ✅ ADD THIS BEFORE RETURNING
+            self._save_gnn_decision_metadata(
+                merge_step=self.current_merge_step,
+                action=action,
+                src=src,
+                tgt=tgt,
+                obs=obs,
+                reward=reward,
+                info=info
+            )
 
             logger.info(f"\n[PHASE 12] RETURN RESULT")
             logger.info(f"  Returning:")
@@ -1829,6 +1854,71 @@ class MergeEnv(gym.Env):
         self._edge_features_cache_hash = current_hash
 
         return result
+
+    def _save_gnn_decision_metadata(self, merge_step: int, action: int,
+                                    src: int, tgt: int, obs: Dict,
+                                    reward: float, info: Dict) -> None:
+        """✅ NEW: Save GNN decision metadata for analysis."""
+
+        try:
+            import json
+            from datetime import datetime
+
+            metadata = {
+                'episode_step': self.current_merge_step,
+                'merge_step': merge_step,
+                'action_index': int(action),
+                'chosen_edge': [int(src), int(tgt)],
+                'observation_shape': {
+                    'num_nodes': int(obs.get('num_nodes', 0)),
+                    'num_edges': int(obs.get('num_edges', 0)),
+                    'node_features_dim': int(obs['x'].shape[-1]) if obs['x'].ndim > 1 else 0,
+                },
+                'reward_received': float(reward),
+                'merge_info': {
+                    'plan_cost': info.get('plan_cost', 0),
+                    'num_expansions': info.get('num_expansions', 0),
+                    'delta_states': info.get('delta_states', 0),
+                },
+                'timestamp': datetime.now().isoformat(),
+                'problem': os.path.basename(self.problem_file),
+            }
+
+            self.gnn_decisions_log.append(metadata)
+
+        except Exception as e:
+            logger.debug(f"Could not save GNN metadata: {e}")
+
+    def _export_episode_metadata(self) -> None:
+        """✅ NEW: Export all GNN decisions from this episode."""
+
+        if not self.gnn_decisions_log:
+            return
+
+        try:
+            import json
+            from datetime import datetime
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            episode_metadata = {
+                'problem': os.path.basename(self.problem_file),
+                'num_decisions': len(self.gnn_decisions_log),
+                'decisions': self.gnn_decisions_log,
+                'export_timestamp': datetime.now().isoformat(),
+            }
+
+            metadata_file = os.path.join(
+                self.gnn_metadata_dir,
+                f"episode_{timestamp}_{len(self.gnn_decisions_log)}_decisions.json"
+            )
+
+            with open(metadata_file, 'w') as f:
+                json.dump(episode_metadata, f, indent=2, default=str)
+
+            logger.info(f"✓ Exported GNN episode metadata: {metadata_file}")
+
+        except Exception as e:
+            logger.warning(f"Failed to export episode metadata: {e}")
 
     def _count_total_states(self) -> int:
         return sum(d["num_states"] for _, d in self.graph_tracker.graph.nodes(data=True))

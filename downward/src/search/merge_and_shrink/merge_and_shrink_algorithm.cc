@@ -43,6 +43,99 @@ using namespace std;
 using plugins::Bounds;
 using utils::ExitCode;
 
+// FILE: downward/src/search/merge_and_shrink/merge_and_shrink_algorithm.cc
+// ADD THIS FUNCTION
+
+json compute_merge_metadata(
+    int iteration,
+    int ts1_id,
+    int ts2_id,
+    const FactoredTransitionSystem& fts,
+    int merged_id,
+    bool before_shrinking) {
+
+    const TransitionSystem& ts1 = fts.get_transition_system(ts1_id);
+    const TransitionSystem& ts2 = fts.get_transition_system(ts2_id);
+
+    // Extract F-values
+    auto get_f_stats = [&](const TransitionSystem& ts, const Distances& dist) {
+        std::vector<int> f_values;
+        for (int i = 0; i < ts.get_size(); ++i) {
+            int init = dist.get_init_distance(i);
+            int goal = dist.get_goal_distance(i);
+            if (init != INF && goal != INF) {
+                f_values.push_back(init + goal);
+            }
+        }
+
+        if (f_values.empty()) {
+            return json {
+                {"min", INF}, {"max", INF}, {"mean", 0.0}, {"std", 0.0},
+                {"reachable_count", 0}
+            };
+        }
+
+        double sum = std::accumulate(f_values.begin(), f_values.end(), 0.0);
+        double mean = sum / f_values.size();
+        double variance = 0.0;
+        for (int v : f_values) {
+            variance += (v - mean) * (v - mean);
+        }
+        double std_dev = std::sqrt(variance / f_values.size());
+
+        return json {
+            {"min", *std::min_element(f_values.begin(), f_values.end())},
+            {"max", *std::max_element(f_values.begin(), f_values.end())},
+            {"mean", mean},
+            {"std", std_dev},
+            {"reachable_count", f_values.size()}
+        };
+    };
+
+    // Compute density
+    auto count_transitions = [](const TransitionSystem& ts) {
+        int count = 0;
+        for (auto it = ts.begin(); it != ts.end(); ++it) {
+            count += it->get_transitions().size();
+        }
+        return count;
+    };
+
+    int ts1_trans = count_transitions(ts1);
+    int ts2_trans = count_transitions(ts2);
+
+    json metadata;
+    metadata["iteration"] = iteration;
+    metadata["ts1_id"] = ts1_id;
+    metadata["ts2_id"] = ts2_id;
+    metadata["ts1_size"] = ts1.get_size();
+    metadata["ts2_size"] = ts2.get_size();
+    metadata["expected_product"] = ts1.get_size() * ts2.get_size();
+    metadata["ts1_transitions"] = ts1_trans;
+    metadata["ts2_transitions"] = ts2_trans;
+    metadata["ts1_density"] = (double)ts1_trans / ts1.get_size();
+    metadata["ts2_density"] = (double)ts2_trans / ts2.get_size();
+    metadata["ts1_f_stats"] = get_f_stats(ts1, fts.get_distances(ts1_id));
+    metadata["ts2_f_stats"] = get_f_stats(ts2, fts.get_distances(ts2_id));
+    metadata["ts1_vars"] = ts1.get_incorporated_variables();
+    metadata["ts2_vars"] = ts2.get_incorporated_variables();
+
+    if (before_shrinking) {
+        metadata["phase"] = "before_shrinking";
+    } else {
+        const TransitionSystem& merged = fts.get_transition_system(merged_id);
+        metadata["phase"] = "after_shrinking";
+        metadata["merged_size"] = merged.get_size();
+        metadata["merged_transitions"] = count_transitions(merged);
+        metadata["merged_density"] = (double)count_transitions(merged) / merged.get_size();
+        metadata["merged_f_stats"] = get_f_stats(merged, fts.get_distances(merged_id));
+        metadata["shrinking_ratio"] = (double)merged.get_size() /
+                                      (ts1.get_size() * ts2.get_size());
+    }
+
+    return metadata;
+}
+
 namespace merge_and_shrink {
 static void log_progress(const utils::Timer &timer, const string &msg, utils::LogProxy &log) {
     log << "M&S algorithm timer: " << timer << " (" << msg << ")" << endl;
@@ -342,8 +435,233 @@ void MergeAndShrinkAlgorithm::main_loop(
         }
         if (ran_out_of_time(timer)) break;
 
+//        // ====================================================================
+//        // PHASE 5: EXPORT MERGE SIGNALS (BEFORE DATA) - SIMPLIFIED INLINE
+//        // ====================================================================
+//
+//        {
+//            const auto& init1 = fts.get_distances(merge_index1).get_init_distances();
+//            const auto& goal1 = fts.get_distances(merge_index1).get_goal_distances();
+//            const auto& init2 = fts.get_distances(merge_index2).get_init_distances();
+//            const auto& goal2 = fts.get_distances(merge_index2).get_goal_distances();
+//
+//            std::vector<int> f1(init1.size()), f2(init2.size());
+//            for (size_t i = 0; i < f1.size(); ++i) {
+//                f1[i] = (init1[i] == INF || goal1[i] == INF) ? INF : init1[i] + goal1[i];
+//            }
+//            for (size_t j = 0; j < f2.size(); ++j) {
+//                f2[j] = (init2[j] == INF || goal2[j] == INF) ? INF : init2[j] + goal2[j];
+//            }
+//
+//            int ts1_transitions = 0;
+//            for (auto it = fts.get_transition_system(merge_index1).begin();
+//                 it != fts.get_transition_system(merge_index1).end(); ++it) {
+//                ts1_transitions += (*it).get_transitions().size();
+//            }
+//
+//            int ts2_transitions = 0;
+//            for (auto it = fts.get_transition_system(merge_index2).begin();
+//                 it != fts.get_transition_system(merge_index2).end(); ++it) {
+//                ts2_transitions += (*it).get_transitions().size();
+//            }
+//
+//            int ts1_size = (int)f1.size();
+//            int ts2_size = (int)f2.size();
+//
+//            json product_mapping;
+//            for (int s = 0; s < ts1_size * ts2_size; ++s) {
+//                int s1 = s / ts2_size;
+//                int s2 = s % ts2_size;
+//                product_mapping[std::to_string(s)] = {{"s1", s1}, {"s2", s2}};
+//            }
+//
+//            json before_data;
+//            before_data["ts1_id"] = merge_index1;
+//            before_data["ts2_id"] = merge_index2;
+//            before_data["iteration"] = iteration;
+//            before_data["ts1_f_values"] = f1;
+//            before_data["ts2_f_values"] = f2;
+//            before_data["ts1_size"] = ts1_size;
+//            before_data["ts2_size"] = ts2_size;
+//            before_data["ts1_num_transitions"] = ts1_transitions;
+//            before_data["ts2_num_transitions"] = ts2_transitions;
+//            before_data["product_mapping"] = product_mapping;
+//
+//            // ✅ DIRECT WRITE: No helper function, just write it
+//            std::string before_path = fd_output_dir + "/merge_before_" + std::to_string(iteration) + ".json";
+//            std::ofstream before_file(before_path, std::ios::out | std::ios::trunc);
+//            if (!before_file.is_open()) {
+//                std::cerr << "[M&S] ERROR: Cannot create merge_before file: " << before_path << std::endl;
+//                throw std::runtime_error("Cannot create merge_before file");
+//            }
+//            before_file << before_data.dump(2);
+//            before_file.close();
+//            std::cout << "[M&S] ✅ Wrote merge_before_" << iteration << ".json" << std::endl;
+//        }
+//
+//        // ====================================================================
+//        // PHASE 6: PERFORM ACTUAL MERGE
+//        // ====================================================================
+//
+//        int merged_index = fts.merge(merge_index1, merge_index2, log);
+//
+//        // ====================================================================
+//        // PHASE 7: EXPORT MERGE SIGNALS (AFTER DATA) - SIMPLIFIED INLINE
+//        // ====================================================================
+//
+//        {
+//            const auto& init_dist = fts.get_distances(merged_index).get_init_distances();
+//            const auto& goal_dist = fts.get_distances(merged_index).get_goal_distances();
+//
+//            std::vector<int> f_after(init_dist.size());
+//            for (size_t s = 0; s < f_after.size(); ++s) {
+//                f_after[s] = (init_dist[s] == INF || goal_dist[s] == INF) ? INF : init_dist[s] + goal_dist[s];
+//            }
+//
+//            const TransitionSystem& merged_ts = fts.get_transition_system(merged_index);
+//            int num_goals = 0;
+//            for (size_t i = 0; i < f_after.size(); ++i) {
+//                if (merged_ts.is_goal_state(i)) num_goals++;
+//            }
+//
+//            int merged_transitions = 0;
+//            for (auto it = merged_ts.begin(); it != merged_ts.end(); ++it) {
+//                merged_transitions += (*it).get_transitions().size();
+//            }
+//
+//            // ✅ COMPUTE A* METRICS (inline, simple version)
+//            int nodes_expanded = 0;
+//            for (int i = 0; i < merged_ts.get_size(); ++i) {
+//                if (init_dist[i] != INF && goal_dist[i] != INF) {
+//                    nodes_expanded++;
+//                }
+//            }
+//
+//            int reachable_states = nodes_expanded;
+//            double branching_factor = 1.0;
+//            if (reachable_states > 0 && merged_transitions > 0) {
+//                branching_factor = (double)merged_transitions / (double)reachable_states;
+//                if (std::isnan(branching_factor) || std::isinf(branching_factor) || branching_factor < 1.0) {
+//                    branching_factor = 1.0;
+//                }
+//            }
+//
+//            int search_depth = 0;
+//            long long sum_goal_dist = 0;
+//            int reachable_goal_count = 0;
+//            for (int i = 0; i < merged_ts.get_size(); ++i) {
+//                if (init_dist[i] != INF && goal_dist[i] != INF) {
+//                    sum_goal_dist += goal_dist[i];
+//                    reachable_goal_count++;
+//                }
+//            }
+//            if (reachable_goal_count > 0) {
+//                search_depth = (int)std::round((double)sum_goal_dist / reachable_goal_count);
+//            }
+//
+//            int best_goal_f = INF;
+//            for (int i = 0; i < merged_ts.get_size(); ++i) {
+//                if (merged_ts.is_goal_state(i) && init_dist[i] != INF && goal_dist[i] != INF) {
+//                    int f = init_dist[i] + goal_dist[i];
+//                    if (f < best_goal_f) {
+//                        best_goal_f = f;
+//                    }
+//                }
+//            }
+//            bool solution_found = (best_goal_f != INF);
+//            int solution_cost = solution_found ? best_goal_f : 0;
+//
+//            json after_data;
+//            after_data["ts1_id"] = merge_index1;
+//            after_data["ts2_id"] = merge_index2;
+//            after_data["merged_id"] = merged_index;
+//            after_data["iteration"] = iteration;
+//            after_data["f_values"] = f_after;
+//            after_data["num_states"] = (int)f_after.size();
+//            after_data["num_goal_states"] = num_goals;
+//            after_data["num_transitions"] = merged_transitions;
+//
+//            json search_signals;
+//            search_signals["nodes_expanded"] = nodes_expanded;
+//            search_signals["search_depth"] = search_depth;
+//            search_signals["solution_cost"] = solution_cost;
+//            search_signals["branching_factor"] = branching_factor;
+//            search_signals["solution_found"] = solution_found;
+//            after_data["search_signals"] = search_signals;
+//
+//            // ✅ DIRECT WRITE: No helper function
+//            std::string after_path = fd_output_dir + "/merge_after_" + std::to_string(iteration) + ".json";
+//            std::ofstream after_file(after_path, std::ios::out | std::ios::trunc);
+//            if (!after_file.is_open()) {
+//                std::cerr << "[M&S] ERROR: Cannot create merge_after file: " << after_path << std::endl;
+//                throw std::runtime_error("Cannot create merge_after file");
+//            }
+//            after_file << after_data.dump(2);
+//            after_file.close();
+//            std::cout << "[M&S] ✅ Wrote merge_after_" << iteration << ".json" << std::endl;
+//        }
+//
+//        // ====================================================================
+//        // PHASE 8: EXPORT MERGED TS JSON - SIMPLIFIED INLINE
+//        // ====================================================================
+//
+//        {
+//            const TransitionSystem& ts = fts.get_transition_system(merged_index);
+//
+//            json ts_json;
+//            ts_json["iteration"] = iteration;
+//            ts_json["num_states"] = ts.get_size();
+//            ts_json["init_state"] = ts.get_init_state();
+//            ts_json["transformed"] = (shrunk || reduced);
+//
+//            std::vector<int> goal_states;
+//            for (int i = 0; i < ts.get_size(); ++i) {
+//                if (ts.is_goal_state(i)) {
+//                    goal_states.push_back(i);
+//                }
+//            }
+//            ts_json["goal_states"] = goal_states;
+//            ts_json["incorporated_variables"] = ts.get_incorporated_variables();
+//
+//            std::vector<json> transitions;
+//            for (auto it = ts.begin(); it != ts.end(); ++it) {
+//                const auto& info = *it;
+//                const auto& label_group = info.get_label_group();
+//                const auto& trans_vec = info.get_transitions();
+//
+//                for (int label : label_group) {
+//                    for (const auto& trans : trans_vec) {
+//                        transitions.push_back({
+//                            {"src", trans.src},
+//                            {"target", trans.target},
+//                            {"label", label}
+//                        });
+//                    }
+//                }
+//            }
+//            ts_json["transitions"] = transitions;
+//
+//            std::string ts_path = fd_output_dir + "/ts_" + std::to_string(iteration) + ".json";
+//
+//            // ✅ DIRECT WRITE: Simple, no helper function
+//            std::ofstream ts_file(ts_path, std::ios::out | std::ios::trunc);
+//            if (!ts_file.is_open()) {
+//                std::cerr << "[M&S] ERROR: Cannot create ts file: " << ts_path << std::endl;
+//                throw std::runtime_error("Cannot create ts file");
+//            }
+//            ts_file << ts_json.dump(2);
+//            ts_file.close();
+//            std::cout << "[M&S] ✅ Wrote ts_" << iteration << ".json with " << ts.get_size() << " states" << std::endl;
+//        }
+//
+//        // ====================================================================
+//        // PHASE 9: INCREMENT ITERATION COUNTER
+//        // ====================================================================
+//
+//        iteration++;  // ✅ MOVED HERE for clarity
+
         // ====================================================================
-        // PHASE 5: EXPORT MERGE SIGNALS (BEFORE DATA) - SIMPLIFIED INLINE
+        // PHASE 5: EXPORT MERGE SIGNALS (BEFORE DATA) - ENHANCED
         // ====================================================================
 
         {
@@ -360,20 +678,62 @@ void MergeAndShrinkAlgorithm::main_loop(
                 f2[j] = (init2[j] == INF || goal2[j] == INF) ? INF : init2[j] + goal2[j];
             }
 
-            int ts1_transitions = 0;
-            for (auto it = fts.get_transition_system(merge_index1).begin();
-                 it != fts.get_transition_system(merge_index1).end(); ++it) {
+            const TransitionSystem& ts1 = fts.get_transition_system(merge_index1);
+            const TransitionSystem& ts2 = fts.get_transition_system(merge_index2);
+
+            int ts1_transitions = 0, ts2_transitions = 0;
+            for (auto it = ts1.begin(); it != ts1.end(); ++it) {
                 ts1_transitions += (*it).get_transitions().size();
             }
-
-            int ts2_transitions = 0;
-            for (auto it = fts.get_transition_system(merge_index2).begin();
-                 it != fts.get_transition_system(merge_index2).end(); ++it) {
+            for (auto it = ts2.begin(); it != ts2.end(); ++it) {
                 ts2_transitions += (*it).get_transitions().size();
             }
 
             int ts1_size = (int)f1.size();
             int ts2_size = (int)f2.size();
+            int ts1_goal_states = 0, ts2_goal_states = 0;
+            for (int i = 0; i < ts1_size; ++i) {
+                if (ts1.is_goal_state(i)) ts1_goal_states++;
+            }
+            for (int j = 0; j < ts2_size; ++j) {
+                if (ts2.is_goal_state(j)) ts2_goal_states++;
+            }
+
+            // ✅ ENHANCED: Compute F-value statistics INLINE
+            auto compute_f_stats = [](const std::vector<int>& f_vals) -> json {
+                std::vector<int> valid_f;
+                for (int f : f_vals) {
+                    if (f != INF && f >= 0 && f < 1000000000) {
+                        valid_f.push_back(f);
+                    }
+                }
+
+                json stats;
+                if (valid_f.empty()) {
+                    stats["min"] = INF;
+                    stats["max"] = INF;
+                    stats["mean"] = 0.0;
+                    stats["std"] = 0.0;
+                    stats["valid_count"] = 0;
+                } else {
+                    int min_f = *std::min_element(valid_f.begin(), valid_f.end());
+                    int max_f = *std::max_element(valid_f.begin(), valid_f.end());
+                    double sum = std::accumulate(valid_f.begin(), valid_f.end(), 0.0);
+                    double mean = sum / valid_f.size();
+                    double variance = 0.0;
+                    for (int v : valid_f) {
+                        variance += (v - mean) * (v - mean);
+                    }
+                    double std_dev = std::sqrt(variance / valid_f.size());
+
+                    stats["min"] = min_f;
+                    stats["max"] = max_f;
+                    stats["mean"] = mean;
+                    stats["std"] = std_dev;
+                    stats["valid_count"] = valid_f.size();
+                }
+                return stats;
+            };
 
             json product_mapping;
             for (int s = 0; s < ts1_size * ts2_size; ++s) {
@@ -383,27 +743,37 @@ void MergeAndShrinkAlgorithm::main_loop(
             }
 
             json before_data;
+            before_data["iteration"] = iteration;
             before_data["ts1_id"] = merge_index1;
             before_data["ts2_id"] = merge_index2;
-            before_data["iteration"] = iteration;
-            before_data["ts1_f_values"] = f1;
-            before_data["ts2_f_values"] = f2;
             before_data["ts1_size"] = ts1_size;
             before_data["ts2_size"] = ts2_size;
-            before_data["ts1_num_transitions"] = ts1_transitions;
-            before_data["ts2_num_transitions"] = ts2_transitions;
+            before_data["expected_product_size"] = ts1_size * ts2_size;
+            before_data["ts1_transitions"] = ts1_transitions;
+            before_data["ts2_transitions"] = ts2_transitions;
+            before_data["ts1_density"] = (double)ts1_transitions / std::max(ts1_size, 1);
+            before_data["ts2_density"] = (double)ts2_transitions / std::max(ts2_size, 1);
+            before_data["ts1_goal_states"] = ts1_goal_states;
+            before_data["ts2_goal_states"] = ts2_goal_states;
+            before_data["ts1_f_values"] = f1;
+            before_data["ts2_f_values"] = f2;
+            before_data["ts1_f_stats"] = compute_f_stats(f1);
+            before_data["ts2_f_stats"] = compute_f_stats(f2);
+            before_data["ts1_variables"] = ts1.get_incorporated_variables();
+            before_data["ts2_variables"] = ts2.get_incorporated_variables();
             before_data["product_mapping"] = product_mapping;
+            before_data["shrunk"] = shrunk;
+            before_data["reduced"] = reduced;
 
-            // ✅ DIRECT WRITE: No helper function, just write it
             std::string before_path = fd_output_dir + "/merge_before_" + std::to_string(iteration) + ".json";
             std::ofstream before_file(before_path, std::ios::out | std::ios::trunc);
             if (!before_file.is_open()) {
                 std::cerr << "[M&S] ERROR: Cannot create merge_before file: " << before_path << std::endl;
-                throw std::runtime_error("Cannot create merge_before file");
+            } else {
+                before_file << before_data.dump(2);
+                before_file.close();
+                std::cout << "[M&S] ✅ Wrote merge_before_" << iteration << ".json" << std::endl;
             }
-            before_file << before_data.dump(2);
-            before_file.close();
-            std::cout << "[M&S] ✅ Wrote merge_before_" << iteration << ".json" << std::endl;
         }
 
         // ====================================================================
@@ -413,7 +783,7 @@ void MergeAndShrinkAlgorithm::main_loop(
         int merged_index = fts.merge(merge_index1, merge_index2, log);
 
         // ====================================================================
-        // PHASE 7: EXPORT MERGE SIGNALS (AFTER DATA) - SIMPLIFIED INLINE
+        // PHASE 7: EXPORT MERGE SIGNALS (AFTER DATA) - ENHANCED
         // ====================================================================
 
         {
@@ -426,9 +796,15 @@ void MergeAndShrinkAlgorithm::main_loop(
             }
 
             const TransitionSystem& merged_ts = fts.get_transition_system(merged_index);
-            int num_goals = 0;
+            int num_goals = 0, reachable_count = 0, unreachable_count = 0;
+
             for (size_t i = 0; i < f_after.size(); ++i) {
                 if (merged_ts.is_goal_state(i)) num_goals++;
+                if (init_dist[i] != INF && goal_dist[i] != INF) {
+                    reachable_count++;
+                } else {
+                    unreachable_count++;
+                }
             }
 
             int merged_transitions = 0;
@@ -436,18 +812,10 @@ void MergeAndShrinkAlgorithm::main_loop(
                 merged_transitions += (*it).get_transitions().size();
             }
 
-            // ✅ COMPUTE A* METRICS (inline, simple version)
-            int nodes_expanded = 0;
-            for (int i = 0; i < merged_ts.get_size(); ++i) {
-                if (init_dist[i] != INF && goal_dist[i] != INF) {
-                    nodes_expanded++;
-                }
-            }
-
-            int reachable_states = nodes_expanded;
+            // ✅ ENHANCED: Compute A* metrics with validation
             double branching_factor = 1.0;
-            if (reachable_states > 0 && merged_transitions > 0) {
-                branching_factor = (double)merged_transitions / (double)reachable_states;
+            if (reachable_count > 0 && merged_transitions > 0) {
+                branching_factor = (double)merged_transitions / (double)reachable_count;
                 if (std::isnan(branching_factor) || std::isinf(branching_factor) || branching_factor < 1.0) {
                     branching_factor = 1.0;
                 }
@@ -456,7 +824,7 @@ void MergeAndShrinkAlgorithm::main_loop(
             int search_depth = 0;
             long long sum_goal_dist = 0;
             int reachable_goal_count = 0;
-            for (int i = 0; i < merged_ts.get_size(); ++i) {
+            for (int i = 0; i < (int)f_after.size(); ++i) {
                 if (init_dist[i] != INF && goal_dist[i] != INF) {
                     sum_goal_dist += goal_dist[i];
                     reachable_goal_count++;
@@ -467,7 +835,7 @@ void MergeAndShrinkAlgorithm::main_loop(
             }
 
             int best_goal_f = INF;
-            for (int i = 0; i < merged_ts.get_size(); ++i) {
+            for (int i = 0; i < (int)f_after.size(); ++i) {
                 if (merged_ts.is_goal_state(i) && init_dist[i] != INF && goal_dist[i] != INF) {
                     int f = init_dist[i] + goal_dist[i];
                     if (f < best_goal_f) {
@@ -478,38 +846,81 @@ void MergeAndShrinkAlgorithm::main_loop(
             bool solution_found = (best_goal_f != INF);
             int solution_cost = solution_found ? best_goal_f : 0;
 
+            // ✅ ENHANCED: F-value statistics
+            auto compute_f_stats = [](const std::vector<int>& f_vals) -> json {
+                std::vector<int> valid_f;
+                for (int f : f_vals) {
+                    if (f != INF && f >= 0 && f < 1000000000) {
+                        valid_f.push_back(f);
+                    }
+                }
+
+                json stats;
+                if (valid_f.empty()) {
+                    stats["min"] = INF;
+                    stats["max"] = INF;
+                    stats["mean"] = 0.0;
+                    stats["std"] = 0.0;
+                    stats["valid_count"] = 0;
+                } else {
+                    int min_f = *std::min_element(valid_f.begin(), valid_f.end());
+                    int max_f = *std::max_element(valid_f.begin(), valid_f.end());
+                    double sum = std::accumulate(valid_f.begin(), valid_f.end(), 0.0);
+                    double mean = sum / valid_f.size();
+                    double variance = 0.0;
+                    for (int v : valid_f) {
+                        variance += (v - mean) * (v - mean);
+                    }
+                    double std_dev = std::sqrt(variance / valid_f.size());
+
+                    stats["min"] = min_f;
+                    stats["max"] = max_f;
+                    stats["mean"] = mean;
+                    stats["std"] = std_dev;
+                    stats["valid_count"] = valid_f.size();
+                }
+                return stats;
+            };
+
             json after_data;
+            after_data["iteration"] = iteration;
             after_data["ts1_id"] = merge_index1;
             after_data["ts2_id"] = merge_index2;
             after_data["merged_id"] = merged_index;
-            after_data["iteration"] = iteration;
+            after_data["merged_size"] = (int)f_after.size();
+            after_data["merged_goal_states"] = num_goals;
+            after_data["merged_transitions"] = merged_transitions;
+            after_data["merged_density"] = (double)merged_transitions / std::max((int)f_after.size(), 1);
+            after_data["reachable_states"] = reachable_count;
+            after_data["unreachable_states"] = unreachable_count;
+            after_data["reachability_ratio"] = (double)reachable_count / std::max((int)f_after.size(), 1);
             after_data["f_values"] = f_after;
-            after_data["num_states"] = (int)f_after.size();
-            after_data["num_goal_states"] = num_goals;
-            after_data["num_transitions"] = merged_transitions;
+            after_data["f_stats"] = compute_f_stats(f_after);
+            after_data["shrinking_ratio"] = (double)f_after.size() /
+                                             std::max(fts.get_transition_system(merge_index1).get_size() *
+                                                     fts.get_transition_system(merge_index2).get_size(), 1);
 
             json search_signals;
-            search_signals["nodes_expanded"] = nodes_expanded;
+            search_signals["nodes_expanded"] = reachable_count;
             search_signals["search_depth"] = search_depth;
             search_signals["solution_cost"] = solution_cost;
             search_signals["branching_factor"] = branching_factor;
             search_signals["solution_found"] = solution_found;
             after_data["search_signals"] = search_signals;
 
-            // ✅ DIRECT WRITE: No helper function
             std::string after_path = fd_output_dir + "/merge_after_" + std::to_string(iteration) + ".json";
             std::ofstream after_file(after_path, std::ios::out | std::ios::trunc);
             if (!after_file.is_open()) {
                 std::cerr << "[M&S] ERROR: Cannot create merge_after file: " << after_path << std::endl;
-                throw std::runtime_error("Cannot create merge_after file");
+            } else {
+                after_file << after_data.dump(2);
+                after_file.close();
+                std::cout << "[M&S] ✅ Wrote merge_after_" << iteration << ".json" << std::endl;
             }
-            after_file << after_data.dump(2);
-            after_file.close();
-            std::cout << "[M&S] ✅ Wrote merge_after_" << iteration << ".json" << std::endl;
         }
 
         // ====================================================================
-        // PHASE 8: EXPORT MERGED TS JSON - SIMPLIFIED INLINE
+        // PHASE 8: EXPORT MERGED TS JSON - ENHANCED
         // ====================================================================
 
         {
@@ -549,23 +960,21 @@ void MergeAndShrinkAlgorithm::main_loop(
             ts_json["transitions"] = transitions;
 
             std::string ts_path = fd_output_dir + "/ts_" + std::to_string(iteration) + ".json";
-
-            // ✅ DIRECT WRITE: Simple, no helper function
             std::ofstream ts_file(ts_path, std::ios::out | std::ios::trunc);
             if (!ts_file.is_open()) {
                 std::cerr << "[M&S] ERROR: Cannot create ts file: " << ts_path << std::endl;
-                throw std::runtime_error("Cannot create ts file");
+            } else {
+                ts_file << ts_json.dump(2);
+                ts_file.close();
+                std::cout << "[M&S] ✅ Wrote ts_" << iteration << ".json" << std::endl;
             }
-            ts_file << ts_json.dump(2);
-            ts_file.close();
-            std::cout << "[M&S] ✅ Wrote ts_" << iteration << ".json with " << ts.get_size() << " states" << std::endl;
         }
 
         // ====================================================================
         // PHASE 9: INCREMENT ITERATION COUNTER
         // ====================================================================
 
-        iteration++;  // ✅ MOVED HERE for clarity
+        iteration++;
 
         int abs_size = fts.get_transition_system(merged_index).get_size();
         if (abs_size > maximum_intermediate_size) {

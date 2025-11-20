@@ -348,7 +348,7 @@ def evaluate_on_test_set(
     print_section("PHASE 2: EVALUATION ON TEST SET")
 
     try:
-        from evaluation.evaluation_comprehensive import (
+        from misc.evaluation.evaluation_comprehensive import (
             EvaluationFramework,
             GNNPolicyRunner,
             BaselineRunner,

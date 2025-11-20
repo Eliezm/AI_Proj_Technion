@@ -108,7 +108,7 @@ def load_benchmarks_from_folders() -> Dict[str, List[Tuple[str, str]]]:
     """
     print_section("PHASE 0: LOAD BENCHMARKS FROM FOLDER STRUCTURE")
 
-    benchmarks_dir = os.path.abspath("benchmarks")
+    benchmarks_dir = os.path.abspath("misc/benchmarks")
 
     if not os.path.isdir(benchmarks_dir):
         logger.error(f"Benchmarks directory not found: {benchmarks_dir}")
@@ -351,7 +351,7 @@ def run_multi_problem_training(
         from stable_baselines3.common.monitor import Monitor
 
         # ✅ NEW: Load or create model once for all problems
-        model_path = "mvp_output/gnn_model.zip"
+        model_path = "misc/mvp_output/gnn_model.zip"
         model = None
 
         if os.path.exists(model_path):
@@ -442,7 +442,7 @@ def run_multi_problem_training(
         # Save final model
         if model is not None:
             model_filename = f"gnn_model_multi_problem_{reward_variant}.zip"
-            model_path_out = f"mvp_output/{model_filename}"
+            model_path_out = f"misc/mvp_output/{model_filename}"
             model.save(model_path_out)
             logger.info(f"\n✓ Final model saved to: {model_path_out}")
             logger.info(f"  Problems trained on: {problems_trained}")
@@ -601,7 +601,7 @@ def main():
     logger.info("  2. Review training log:")
     logger.info(f"     {os.path.abspath('training_multi_problem.log')}\n")
     logger.info("  3. Trained models:")
-    logger.info(f"     {os.path.abspath('mvp_output/')}\n")
+    logger.info(f"     {os.path.abspath('misc/mvp_output/')}\n")
 
     return 0
 

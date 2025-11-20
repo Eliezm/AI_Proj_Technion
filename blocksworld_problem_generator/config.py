@@ -111,7 +111,7 @@ DIFFICULTY_TIERS = {
         name='large',
         min_length=50,
         max_length=500,
-        target_length=151
+        target_length=154
     ),
 }
 

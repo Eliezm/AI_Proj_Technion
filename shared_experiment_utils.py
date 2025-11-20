@@ -378,7 +378,7 @@ def load_benchmarks_by_difficulty(
 
     import glob
 
-    benchmarks_dir = os.path.abspath("benchmarks")
+    benchmarks_dir = os.path.abspath("misc/benchmarks")
 
     if not os.path.isdir(benchmarks_dir):
         logger.warning(f"Benchmarks dir not found: {benchmarks_dir}")

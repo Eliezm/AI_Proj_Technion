@@ -42,7 +42,7 @@ class ScaleGeneralizationConfig:
     OUTPUT_DIR = "scale_generalization_results"
 
     # ✅ REFACTORED: Use new benchmark format
-    BENCHMARK_DIR = "benchmarks"
+    BENCHMARK_DIR = "misc/benchmarks"
     TRAIN_SIZES = ["small", "medium"]
     TEST_SIZES = ["medium", "large"]
     MAX_PROBLEMS_PER_SIZE = 5

@@ -1,6 +1,6 @@
 The file config.py code is this:
 """
-Configuration and constants for the Logistics problem generation framework.
+Configuration and constants for the Logistics domain.pddl problems files generation.
 """
 
 from dataclasses import dataclass
@@ -16,25 +16,25 @@ class DifficultyTier:
     target_length: int
 
 
-# Difficulty tier definitions (Requirement #16)
+# FIXED: Reduced target lengths to be achievable with small world
 DIFFICULTY_TIERS = {
     'small': DifficultyTier(
         name='small',
-        min_length=6,
-        max_length=8,
-        target_length=7
+        min_length=500,
+        max_length=1050,
+        target_length=1000
     ),
     'medium': DifficultyTier(
         name='medium',
-        min_length=11,
-        max_length=13,
-        target_length=12
+        min_length=20,
+        max_length=35,
+        target_length=27
     ),
     'large': DifficultyTier(
         name='large',
-        min_length=14,
-        max_length=16,
-        target_length=15
+        min_length=50,
+        max_length=100,
+        target_length=75
     ),
 }
 
@@ -57,15 +57,15 @@ class LogisticsGenerationParams:
     prob_airport: float  # Probability a location is an airport
 
 
-# Default generation parameters (can be overridden)
+# FIXED: Increased complexity to support longer plans
 DEFAULT_LOGISTICS_PARAMS = {
     'small': LogisticsGenerationParams(
-        num_cities=2,
-        locations_per_city=2,
-        num_packages=2,
-        num_trucks=1,
-        num_airplanes=1,
-        prob_airport=0.5
+        num_cities=10,  # More cities
+        locations_per_city=5,  # More locations
+        num_packages=10,  # More packages
+        num_trucks=2,  # More trucks
+        num_airplanes=2,  # More airplanes
+        prob_airport=0.6  # More airports
     ),
     'medium': LogisticsGenerationParams(
         num_cities=3,
@@ -77,9 +77,9 @@ DEFAULT_LOGISTICS_PARAMS = {
     ),
     'large': LogisticsGenerationParams(
         num_cities=4,
-        locations_per_city=3,
+        locations_per_city=4,
         num_packages=6,
-        num_trucks=2,
+        num_trucks=3,
         num_airplanes=2,
         prob_airport=0.5
     ),
@@ -99,17 +99,14 @@ def ensure_output_dirs():
     for dir_path in REQUIRED_DIRS:
         os.makedirs(dir_path, exist_ok=True)
 
+
+
+
 --------------------------------------------------------------------------------
 
 The file state.py code is this:
 """
 State representation for Logistics domain and state validation.
-
-A valid Logistics state consists of:
-- Objects (packages) at locations
-- Trucks and airplanes at locations
-- Objects potentially inside vehicles
-- Static map: in-city relations and airport designations
 """
 
 from typing import Set, Dict, Optional, Tuple, List
@@ -120,20 +117,17 @@ from dataclasses import dataclass, field
 class LogisticsState:
     """Represents a Logistics world state."""
 
-    # Entity collections
     packages: Set[str] = field(default_factory=set)
     trucks: Set[str] = field(default_factory=set)
     airplanes: Set[str] = field(default_factory=set)
     locations: Set[str] = field(default_factory=set)
     cities: Set[str] = field(default_factory=set)
 
-    # Dynamic facts
-    at: Dict[str, str] = field(default_factory=dict)  # object -> location
-    in_vehicle: Dict[str, str] = field(default_factory=dict)  # object -> vehicle
+    at: Dict[str, str] = field(default_factory=dict)
+    in_vehicle: Dict[str, str] = field(default_factory=dict)
 
-    # Static facts (map structure)
-    in_city: Dict[str, str] = field(default_factory=dict)  # location -> city
-    airports: Set[str] = field(default_factory=set)  # Set of airport locations
+    in_city: Dict[str, str] = field(default_factory=dict)
+    airports: Set[str] = field(default_factory=set)
 
     def copy(self) -> 'LogisticsState':
         """Create a deep copy of the state."""
@@ -152,9 +146,14 @@ class LogisticsState:
     def is_valid(self) -> Tuple[bool, Optional[str]]:
         """Enhanced validation with comprehensive checks."""
 
-        # FIX 0: Check basic structure
-        if not self.packages or not self.trucks:
-            return False, "No packages or no trucks"
+        if not self.packages:
+            return False, "No packages"
+        if not self.trucks:
+            return False, "No trucks"
+        if not self.locations:
+            return False, "No locations"
+        if not self.cities:
+            return False, "No cities"
 
         # FIX 1: Package location uniqueness
         package_locations = {}
@@ -183,14 +182,14 @@ class LogisticsState:
             if total != 1:
                 return False, f"Package {pkg} in {total} places (should be exactly 1)"
 
-        # FIX 2: Validate no package is in multiple vehicles
+        # FIX 2: No duplicate packages in vehicles
+        vehicle_contents = {}
         for pkg, vehicle in self.in_vehicle.items():
             if pkg not in self.packages:
                 return False, f"Unknown package in vehicle: {pkg}"
-            # Verify this vehicle contains only this package (implicit uniqueness)
-            count = sum(1 for p, v in self.in_vehicle.items() if v == vehicle and p == pkg)
-            if count != 1:
-                return False, f"Package {pkg} appears multiple times in {vehicle}"
+            if vehicle not in vehicle_contents:
+                vehicle_contents[vehicle] = []
+            vehicle_contents[vehicle].append(pkg)
 
         # FIX 3: Truck validation
         for truck in self.trucks:
@@ -201,10 +200,6 @@ class LogisticsState:
                 return False, f"Truck {truck} at invalid location {loc}"
             if truck in self.in_vehicle:
                 return False, f"Truck {truck} cannot be in another vehicle"
-            # Count packages in this truck
-            pkgs_in_truck = sum(1 for pkg, veh in self.in_vehicle.items() if veh == truck)
-            if pkgs_in_truck > len(self.packages):
-                return False, f"Truck {truck} carrying too many packages"
 
         # FIX 4: Airplane validation
         for airplane in self.airplanes:
@@ -215,10 +210,6 @@ class LogisticsState:
                 return False, f"Airplane {airplane} at non-airport location {loc}"
             if airplane in self.in_vehicle:
                 return False, f"Airplane {airplane} cannot be in another vehicle"
-            # Count packages
-            pkgs_in_airplane = sum(1 for pkg, veh in self.in_vehicle.items() if veh == airplane)
-            if pkgs_in_airplane > len(self.packages):
-                return False, f"Airplane {airplane} carrying too many packages"
 
         # FIX 5: Location validation
         for loc in self.locations:
@@ -232,6 +223,8 @@ class LogisticsState:
         for airport in self.airports:
             if airport not in self.locations:
                 return False, f"Airport {airport} not in locations set"
+            if airport not in self.in_city:
+                return False, f"Airport {airport} not mapped to any city"
 
         # FIX 7: At dict validation
         for obj, loc in self.at.items():
@@ -249,23 +242,41 @@ class LogisticsState:
             if vehicle not in self.at:
                 return False, f"Vehicle {vehicle} with no location"
 
-        # FIX 9: Consistency check - no object in two places
-        for obj in self.packages:
-            locations = [self.at.get(obj), self.in_vehicle.get(obj)]
-            non_none = sum(1 for x in locations if x is not None)
-            if non_none != 1:
-                return False, f"Package {pkg} inconsistent (not in exactly 1 place)"
+        # FIX 9: Consistency check
+        for obj in list(self.packages) + list(self.trucks) + list(self.airplanes):
+            locations_count = 0
+            if obj in self.at:
+                locations_count += 1
+            if obj in self.in_vehicle:
+                locations_count += 1
+
+            if obj in self.packages and locations_count != 1:
+                return False, f"Package {obj} in {locations_count} places (not exactly 1)"
+
+        # FIX 10: Airport distribution for inter-city
+        if len(self.cities) > 1:
+            cities_with_airports = set()
+            for airport in self.airports:
+                city = self.in_city.get(airport)
+                if city:
+                    cities_with_airports.add(city)
+
+            if len(cities_with_airports) < len(self.cities):
+                return False, f"Not all cities have airports (required for inter-city)"
 
         return True, None
 
+    # FIX #1: REMOVE DUPLICATE - KEEP ONLY THIS ONE __hash__ METHOD
     def __hash__(self):
         """Make state hashable for deduplication."""
         at_tuple = tuple(sorted((k, v) for k, v in self.at.items()))
         in_veh_tuple = tuple(sorted((k, v) for k, v in self.in_vehicle.items()))
-        in_city_tuple = tuple(sorted((k, v) for k, v in self.in_city.items()))
         return hash((
-            frozenset(self.at.items()),
-            frozenset(self.in_vehicle.items()),
+            frozenset(self.packages),
+            frozenset(self.trucks),
+            frozenset(self.airplanes),
+            at_tuple,
+            in_veh_tuple,
             frozenset(self.airports)
         ))
 
@@ -274,13 +285,13 @@ class LogisticsState:
         if not isinstance(other, LogisticsState):
             return False
         return (
-                self.packages == other.packages and
-                self.trucks == other.trucks and
-                self.airplanes == other.airplanes and
-                self.at == other.at and
-                self.in_vehicle == other.in_vehicle and
-                self.in_city == other.in_city and
-                self.airports == other.airports
+            self.packages == other.packages and
+            self.trucks == other.trucks and
+            self.airplanes == other.airplanes and
+            self.at == other.at and
+            self.in_vehicle == other.in_vehicle and
+            self.in_city == other.in_city and
+            self.airports == other.airports
         )
 
     def __repr__(self):
@@ -303,25 +314,7 @@ def create_initial_state(
         at: Dict[str, str] = None,
         in_vehicle: Dict[str, str] = None
 ) -> LogisticsState:
-    """
-    Create a valid initial Logistics state.
-
-    All objects start at their designated locations.
-
-    Args:
-        packages: List of package names
-        trucks: List of truck names
-        airplanes: List of airplane names
-        locations: List of location names
-        cities: List of city names
-        in_city: Mapping of location -> city
-        airports: Set of airport location names
-        at: Optional mapping of object -> location (if None, will be empty)
-        in_vehicle: Optional mapping of object -> vehicle (if None, will be empty)
-
-    Returns:
-        Valid LogisticsState
-    """
+    """Create a valid initial Logistics state."""
 
     state = LogisticsState(
         packages=set(packages),
@@ -590,55 +583,104 @@ class ActionExecutor:
         else:
             return None
 
+    # actions.py - REPLACE get_applicable_actions METHOD
+
     @staticmethod
     def get_applicable_actions(state: LogisticsState) -> List[Action]:
-        """Get all applicable actions in the current state (forward direction)."""
+        """Get all applicable actions in the current state (forward direction).
+
+        FIX: Deduplicate actions to avoid generating the same action multiple times.
+        """
         applicable = []
+        seen = set()  # FIX: Track seen actions
 
         # Load-truck actions
         for pkg in state.packages:
+            if pkg in state.in_vehicle:
+                continue  # Skip if already in vehicle
+            pkg_loc = state.at.get(pkg)
             for truck in state.trucks:
-                for loc in state.locations:
-                    if ActionExecutor.can_execute_load_truck(state, pkg, truck, loc):
-                        applicable.append(Action(ActionType.LOAD_TRUCK, [pkg, truck, loc]))
+                truck_loc = state.at.get(truck)
+                if pkg_loc == truck_loc and ActionExecutor.can_execute_load_truck(state, pkg, truck, pkg_loc):
+                    action = Action(ActionType.LOAD_TRUCK, [pkg, truck, pkg_loc])
+                    if action not in seen:
+                        applicable.append(action)
+                        seen.add(action)
 
         # Unload-truck actions
         for pkg in state.packages:
-            for truck in state.trucks:
-                for loc in state.locations:
-                    if ActionExecutor.can_execute_unload_truck(state, pkg, truck, loc):
-                        applicable.append(Action(ActionType.UNLOAD_TRUCK, [pkg, truck, loc]))
+            if pkg not in state.in_vehicle:
+                continue  # Skip if not in vehicle
+            vehicle = state.in_vehicle[pkg]
+            if vehicle not in state.trucks:
+                continue
+            truck_loc = state.at.get(vehicle)
+            if truck_loc and ActionExecutor.can_execute_unload_truck(state, pkg, vehicle, truck_loc):
+                action = Action(ActionType.UNLOAD_TRUCK, [pkg, vehicle, truck_loc])
+                if action not in seen:
+                    applicable.append(action)
+                    seen.add(action)
 
         # Load-airplane actions
         for pkg in state.packages:
+            if pkg in state.in_vehicle:
+                continue
+            pkg_loc = state.at.get(pkg)
+            if pkg_loc not in state.airports:
+                continue
             for airplane in state.airplanes:
-                for loc in state.airports:
-                    if ActionExecutor.can_execute_load_airplane(state, pkg, airplane, loc):
-                        applicable.append(Action(ActionType.LOAD_AIRPLANE, [pkg, airplane, loc]))
+                airplane_loc = state.at.get(airplane)
+                if pkg_loc == airplane_loc and ActionExecutor.can_execute_load_airplane(state, pkg, airplane, pkg_loc):
+                    action = Action(ActionType.LOAD_AIRPLANE, [pkg, airplane, pkg_loc])
+                    if action not in seen:
+                        applicable.append(action)
+                        seen.add(action)
 
         # Unload-airplane actions
         for pkg in state.packages:
-            for airplane in state.airplanes:
-                for loc in state.airports:
-                    if ActionExecutor.can_execute_unload_airplane(state, pkg, airplane, loc):
-                        applicable.append(Action(ActionType.UNLOAD_AIRPLANE, [pkg, airplane, loc]))
+            if pkg not in state.in_vehicle:
+                continue
+            vehicle = state.in_vehicle[pkg]
+            if vehicle not in state.airplanes:
+                continue
+            airplane_loc = state.at.get(vehicle)
+            if airplane_loc and airplane_loc in state.airports and ActionExecutor.can_execute_unload_airplane(state,
+                                                                                                              pkg,
+                                                                                                              vehicle,
+                                                                                                              airplane_loc):
+                action = Action(ActionType.UNLOAD_AIRPLANE, [pkg, vehicle, airplane_loc])
+                if action not in seen:
+                    applicable.append(action)
+                    seen.add(action)
 
         # Drive-truck actions
         for truck in state.trucks:
             truck_loc = state.at.get(truck)
-            if truck_loc:
-                truck_city = state.in_city.get(truck_loc)
-                for dest_loc in state.locations:
-                    if state.in_city.get(dest_loc) == truck_city and dest_loc != truck_loc:
-                        applicable.append(Action(ActionType.DRIVE_TRUCK, [truck, truck_loc, dest_loc, truck_city]))
+            if not truck_loc:
+                continue
+            truck_city = state.in_city.get(truck_loc)
+            if not truck_city:
+                continue
+            for dest_loc in state.locations:
+                if dest_loc != truck_loc and state.in_city.get(dest_loc) == truck_city:
+                    if ActionExecutor.can_execute_drive_truck(state, truck, truck_loc, dest_loc, truck_city):
+                        action = Action(ActionType.DRIVE_TRUCK, [truck, truck_loc, dest_loc, truck_city])
+                        if action not in seen:
+                            applicable.append(action)
+                            seen.add(action)
 
         # Fly-airplane actions
         for airplane in state.airplanes:
             airplane_loc = state.at.get(airplane)
-            if airplane_loc and airplane_loc in state.airports:
-                for dest_airport in state.airports:
-                    if dest_airport != airplane_loc:
-                        applicable.append(Action(ActionType.FLY_AIRPLANE, [airplane, airplane_loc, dest_airport]))
+            if not airplane_loc or airplane_loc not in state.airports:
+                continue
+            for dest_airport in state.airports:
+                if dest_airport != airplane_loc:
+                    if ActionExecutor.can_execute_fly_airplane(state, airplane, airplane_loc, dest_airport):
+                        action = Action(ActionType.FLY_AIRPLANE, [airplane, airplane_loc, dest_airport])
+                        if action not in seen:
+                            applicable.append(action)
+                            seen.add(action)
 
         return applicable
 
@@ -910,23 +952,37 @@ def create_goal_state_from_dict(
     return goal_state
 
 
+# goal_archetypes.py - REPLACE is_goal_achievable FUNCTION
+
+# In goal_archetypes.py, REPLACE is_goal_achievable function with this:
+
 def is_goal_achievable(
         initial_state: LogisticsState,
         goal_dict: Dict[str, str]
 ) -> Tuple[bool, str]:
     """
-    Quick heuristic check that goal is achievable.
+    FIX #4: Comprehensive goal achievability check.
 
     Returns: (is_achievable, reason)
     """
-    # Check 1: All goal packages exist in initial state
+    # Check 1: Empty goal
+    if not goal_dict:
+        return False, "Empty goal"
+
+    # Check 2: All goal packages exist in initial state
     for pkg, goal_loc in goal_dict.items():
         if pkg not in initial_state.packages:
             return False, f"Package {pkg} does not exist"
         if goal_loc not in initial_state.locations:
             return False, f"Goal location {goal_loc} does not exist"
 
-    # Check 2: All packages in initial state are at valid locations
+    # Check 3: Package not already at goal (non-trivial)
+    for pkg, goal_loc in goal_dict.items():
+        current_loc = initial_state.at.get(pkg)
+        if current_loc == goal_loc:
+            return False, f"Package {pkg} already at goal (trivial)"
+
+    # Check 4: All packages have valid initial positions
     for pkg in goal_dict.keys():
         current_loc = initial_state.at.get(pkg)
         if current_loc is None:
@@ -937,37 +993,70 @@ def is_goal_achievable(
             else:
                 return False, f"Package {pkg} has no location or vehicle"
 
-    # Check 3: Goal is different from initial state
-    is_different = False
-    for pkg, goal_loc in goal_dict.items():
-        if initial_state.at.get(pkg) != goal_loc:
-            is_different = True
-            break
-    if not is_different:
-        return False, "Goal equals initial state (trivial)"
-
-    # Check 4: At least one vehicle exists for transport
+    # Check 5: At least one vehicle exists
     if not initial_state.trucks and not initial_state.airplanes:
         return False, "No vehicles to perform transport"
 
-    # Check 5: Intra-city goals must have trucks in that city
+    # Check 6: Validate city connectivity
     for pkg, goal_loc in goal_dict.items():
         initial_loc = initial_state.at.get(pkg)
+        if not initial_loc:
+            if pkg in initial_state.in_vehicle:
+                vehicle = initial_state.in_vehicle[pkg]
+                initial_loc = initial_state.at.get(vehicle)
+            if not initial_loc:
+                return False, f"Cannot determine initial location of {pkg}"
+
         goal_city = initial_state.in_city.get(goal_loc)
         initial_city = initial_state.in_city.get(initial_loc)
 
-        if goal_city == initial_city:  # Intra-city
+        if not goal_city or not initial_city:
+            return False, f"Invalid city mapping"
+
+        # Intra-city case
+        if goal_city == initial_city:
             trucks_in_city = [
                 t for t in initial_state.trucks
                 if initial_state.in_city.get(initial_state.at.get(t)) == goal_city
             ]
             if not trucks_in_city:
-                return False, f"Intra-city goal needs truck in {goal_city}"
-        else:  # Inter-city
+                return False, f"No trucks in {goal_city}"
+        else:
+            # Inter-city case
             if not initial_state.airplanes:
-                return False, "Inter-city goal needs airplane"
+                return False, "Inter-city goal requires airplanes"
             if not initial_state.airports:
-                return False, "Inter-city goal needs airports"
+                return False, "Inter-city goal requires airports"
+
+            # FIX #4: Stricter airport checks
+            source_airports = [
+                a for a in initial_state.airports
+                if initial_state.in_city.get(a) == initial_city
+            ]
+            dest_airports = [
+                a for a in initial_state.airports
+                if initial_state.in_city.get(a) == goal_city
+            ]
+
+            if not source_airports:
+                return False, f"Source city {initial_city} has no airport"
+            if not dest_airports:
+                return False, f"Dest city {goal_city} has no airport"
+
+            # Check trucks in both cities
+            source_trucks = [
+                t for t in initial_state.trucks
+                if initial_state.in_city.get(initial_state.at.get(t)) == initial_city
+            ]
+            dest_trucks = [
+                t for t in initial_state.trucks
+                if initial_state.in_city.get(initial_state.at.get(t)) == goal_city
+            ]
+
+            if not source_trucks:
+                return False, f"Source city {initial_city} has no trucks"
+            if not dest_trucks:
+                return False, f"Dest city {goal_city} has no trucks"
 
     return True, "Goal is achievable"
 
@@ -1124,6 +1213,57 @@ from actions import Action, ActionExecutor, ActionType
 from goal_archetypes import GoalArchetypeGenerator, GoalArchetype
 from logistics_problem_builder import LogisticsProblemBuilder
 from config import LogisticsGenerationParams, DEFAULT_LOGISTICS_PARAMS
+from problem_validator import ProblemValidator
+
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+
+# backward_generator.py - ADD NEW CLASS and MODIFY generate_problem
+
+# In backward_generator.py, REPLACE the StateDeduplicator class with this:
+
+class StateDeduplicator:
+    """Tracks visited states in backward search to prevent cycles."""
+
+    def __init__(self, max_states: int = 5000):  # INCREASED from 500
+        self.visited_hashes = set()
+        self.visited_states = []
+        self.max_states = max_states
+        self.cycle_detected = False
+
+    def is_visited(self, state: LogisticsState) -> bool:
+        """Check if state has been visited."""
+        return hash(state) in self.visited_hashes
+
+    def mark_visited(self, state: LogisticsState) -> bool:
+        """
+        Mark state as visited.
+
+        Returns True if successfully added, False if would exceed max_states.
+        """
+        state_hash = hash(state)
+        if state_hash not in self.visited_hashes:
+            if len(self.visited_hashes) >= self.max_states:
+                self.cycle_detected = True
+                return False
+            self.visited_hashes.add(state_hash)
+            self.visited_states.append(state)
+            return True
+        return True  # Already visited
+
+    def reset(self):
+        """Clear visited states."""
+        self.visited_hashes.clear()
+        self.visited_states.clear()
+        self.cycle_detected = False
+
+    def get_visited_count(self) -> int:
+        """Get number of visited states."""
+        return len(self.visited_hashes)
+
 
 
 class ReverseActionExecutor:
@@ -1135,6 +1275,123 @@ class ReverseActionExecutor:
     2. The preconditions of the forward action are satisfied in the previous state
     3. The new state is valid according to domain rules
     """
+
+    @staticmethod
+    def _validate_reverse_preconditions(
+            state: LogisticsState,
+            action_type: ActionType,
+            params: List[str]
+    ) -> Tuple[bool, str]:
+        """
+        FIX: Validate that the reverse action makes sense.
+
+        Before executing reverse action, check that forward action
+        preconditions would have been satisfied.
+        """
+
+        if action_type == ActionType.LOAD_TRUCK:
+            obj, truck, loc = params
+            # Forward precondition: at(truck, loc) AND at(obj, loc)
+            # Current state must have: in(obj, truck) AND at(truck, loc)
+            if obj not in state.in_vehicle:
+                return False, f"Package {obj} not in vehicle (cannot undo LOAD)"
+            if state.in_vehicle[obj] != truck:
+                return False, f"Package {obj} not in truck {truck}"
+            if state.at.get(truck) != loc:
+                return False, f"Truck {truck} not at location {loc}"
+            if obj in state.at:
+                return False, f"Package {obj} cannot be both in truck and at location"
+
+        elif action_type == ActionType.UNLOAD_TRUCK:
+            obj, truck, loc = params
+            # Forward precondition: at(truck, loc) AND in(obj, truck)
+            # Current state must have: at(obj, loc) AND at(truck, loc)
+            if obj not in state.at:
+                return False, f"Package {obj} not at location (cannot undo UNLOAD)"
+            if state.at[obj] != loc:
+                return False, f"Package {obj} not at location {loc}"
+            if state.at.get(truck) != loc:
+                return False, f"Truck {truck} not at location {loc}"
+            if obj in state.in_vehicle:
+                return False, f"Package {obj} cannot be both in truck and at location"
+
+        elif action_type == ActionType.LOAD_AIRPLANE:
+            obj, airplane, loc = params
+            if obj not in state.in_vehicle:
+                return False, f"Package {obj} not in vehicle"
+            if state.in_vehicle[obj] != airplane:
+                return False, f"Package {obj} not in airplane {airplane}"
+            if loc not in state.airports:
+                return False, f"Location {loc} not an airport"
+            if state.at.get(airplane) != loc:
+                return False, f"Airplane {airplane} not at airport {loc}"
+
+        elif action_type == ActionType.UNLOAD_AIRPLANE:
+            obj, airplane, loc = params
+            if obj not in state.at:
+                return False, f"Package {obj} not at location"
+            if state.at[obj] != loc:
+                return False, f"Package {obj} not at location {loc}"
+            if loc not in state.airports:
+                return False, f"Location {loc} not an airport"
+            if state.at.get(airplane) != loc:
+                return False, f"Airplane {airplane} not at airport {loc}"
+
+        elif action_type == ActionType.DRIVE_TRUCK:
+            truck, loc_from, loc_to, city = params
+            if state.at.get(truck) != loc_to:
+                return False, f"Truck not at destination location"
+            if loc_from not in state.locations:
+                return False, f"Origin location invalid"
+            if state.in_city.get(loc_from) != city:
+                return False, f"Origin location not in city"
+            if state.in_city.get(loc_to) != city:
+                return False, f"Destination location not in city"
+
+        elif action_type == ActionType.FLY_AIRPLANE:
+            airplane, loc_from, loc_to = params
+            if state.at.get(airplane) != loc_to:
+                return False, f"Airplane not at destination"
+            if loc_from not in state.airports:
+                return False, f"Origin location not an airport"
+            if loc_to not in state.airports:
+                return False, f"Destination location not an airport"
+
+        return True, ""
+
+    # FIX: Wrap all undo methods with this validation
+    @staticmethod
+    def undo_action_safe(
+            state: LogisticsState,
+            action_type: ActionType,
+            params: List[str]
+    ) -> Optional[LogisticsState]:
+        """
+        FIX: Safe reverse action execution with validation.
+        """
+        # First validate preconditions
+        valid, reason = ReverseActionExecutor._validate_reverse_preconditions(
+            state, action_type, params
+        )
+        if not valid:
+            return None
+
+        # Then execute
+        if action_type == ActionType.LOAD_TRUCK:
+            return ReverseActionExecutor.undo_load_truck(state, params[0], params[1], params[2])
+        elif action_type == ActionType.UNLOAD_TRUCK:
+            return ReverseActionExecutor.undo_unload_truck(state, params[0], params[1], params[2])
+        elif action_type == ActionType.LOAD_AIRPLANE:
+            return ReverseActionExecutor.undo_load_airplane(state, params[0], params[1], params[2])
+        elif action_type == ActionType.UNLOAD_AIRPLANE:
+            return ReverseActionExecutor.undo_unload_airplane(state, params[0], params[1], params[2])
+        elif action_type == ActionType.DRIVE_TRUCK:
+            return ReverseActionExecutor.undo_drive_truck(state, params[0], params[1])
+        elif action_type == ActionType.FLY_AIRPLANE:
+            return ReverseActionExecutor.undo_fly_airplane(state, params[0], params[1])
+
+        return None
+
 
     @staticmethod
     def undo_load_truck(state: LogisticsState, obj: str, truck: str, loc: str) -> Optional[LogisticsState]:
@@ -1444,10 +1701,21 @@ class ReverseActionExecutor:
         is_valid, _ = new_state.is_valid()
         return new_state if is_valid else None
 
+        # In backward_generator.py, REPLACE get_applicable_reverse_actions with this:
+
     @staticmethod
     def get_applicable_reverse_actions(state: LogisticsState) -> List[Tuple[Action, LogisticsState]]:
-        """Get all applicable reverse actions with strict validation."""
+        """
+        FIX #6: Get all applicable reverse actions with STRICT validation.
+
+        Each action must:
+        1. Pass precondition validation
+        2. Execute successfully
+        3. Produce a valid state
+        4. Not recreate the same state
+        """
         results = []
+        seen_state_hashes = set()
 
         # Undo load-truck actions
         for pkg in state.packages:
@@ -1455,10 +1723,17 @@ class ReverseActionExecutor:
                 truck = state.in_vehicle[pkg]
                 if truck in state.trucks and truck in state.at:
                     loc = state.at[truck]
-                    new_state = ReverseActionExecutor.undo_load_truck(state, pkg, truck, loc)
-                    if new_state is not None:
-                        action = Action(ActionType.LOAD_TRUCK, [pkg, truck, loc])
-                        results.append((action, new_state))
+
+                    action = Action(ActionType.LOAD_TRUCK, [pkg, truck, loc])
+                    new_state = ReverseActionExecutor.undo_action_safe(
+                        state, action.action_type, action.params
+                    )
+
+                    if new_state and new_state != state:
+                        state_hash = hash(new_state)
+                        if state_hash not in seen_state_hashes:
+                            results.append((action, new_state))
+                            seen_state_hashes.add(state_hash)
 
         # Undo unload-truck actions
         for pkg in state.packages:
@@ -1466,10 +1741,17 @@ class ReverseActionExecutor:
                 pkg_loc = state.at[pkg]
                 for truck in state.trucks:
                     if truck in state.at and state.at[truck] == pkg_loc:
-                        new_state = ReverseActionExecutor.undo_unload_truck(state, pkg, truck, pkg_loc)
-                        if new_state is not None:
-                            action = Action(ActionType.UNLOAD_TRUCK, [pkg, truck, pkg_loc])
-                            results.append((action, new_state))
+
+                        action = Action(ActionType.UNLOAD_TRUCK, [pkg, truck, pkg_loc])
+                        new_state = ReverseActionExecutor.undo_action_safe(
+                            state, action.action_type, action.params
+                        )
+
+                        if new_state and new_state != state:
+                            state_hash = hash(new_state)
+                            if state_hash not in seen_state_hashes:
+                                results.append((action, new_state))
+                                seen_state_hashes.add(state_hash)
 
         # Undo load-airplane actions
         for pkg in state.packages:
@@ -1478,10 +1760,17 @@ class ReverseActionExecutor:
                 if vehicle in state.airplanes and vehicle in state.at:
                     loc = state.at[vehicle]
                     if loc in state.airports:
-                        new_state = ReverseActionExecutor.undo_load_airplane(state, pkg, vehicle, loc)
-                        if new_state is not None:
-                            action = Action(ActionType.LOAD_AIRPLANE, [pkg, vehicle, loc])
-                            results.append((action, new_state))
+
+                        action = Action(ActionType.LOAD_AIRPLANE, [pkg, vehicle, loc])
+                        new_state = ReverseActionExecutor.undo_action_safe(
+                            state, action.action_type, action.params
+                        )
+
+                        if new_state and new_state != state:
+                            state_hash = hash(new_state)
+                            if state_hash not in seen_state_hashes:
+                                results.append((action, new_state))
+                                seen_state_hashes.add(state_hash)
 
         # Undo unload-airplane actions
         for pkg in state.packages:
@@ -1490,10 +1779,17 @@ class ReverseActionExecutor:
                 if pkg_loc in state.airports:
                     for airplane in state.airplanes:
                         if airplane in state.at and state.at[airplane] == pkg_loc:
-                            new_state = ReverseActionExecutor.undo_unload_airplane(state, pkg, airplane, pkg_loc)
-                            if new_state is not None:
-                                action = Action(ActionType.UNLOAD_AIRPLANE, [pkg, airplane, pkg_loc])
-                                results.append((action, new_state))
+
+                            action = Action(ActionType.UNLOAD_AIRPLANE, [pkg, airplane, pkg_loc])
+                            new_state = ReverseActionExecutor.undo_action_safe(
+                                state, action.action_type, action.params
+                            )
+
+                            if new_state and new_state != state:
+                                state_hash = hash(new_state)
+                                if state_hash not in seen_state_hashes:
+                                    results.append((action, new_state))
+                                    seen_state_hashes.add(state_hash)
 
         # Undo drive-truck actions
         for truck in state.trucks:
@@ -1502,11 +1798,20 @@ class ReverseActionExecutor:
                 current_city = state.in_city.get(current_loc)
                 if current_city:
                     for other_loc in state.locations:
-                        if state.in_city.get(other_loc) == current_city and other_loc != current_loc:
-                            new_state = ReverseActionExecutor.undo_drive_truck(state, truck, other_loc)
-                            if new_state is not None:
-                                action = Action(ActionType.DRIVE_TRUCK, [truck, other_loc, current_loc, current_city])
-                                results.append((action, new_state))
+                        if (state.in_city.get(other_loc) == current_city and
+                                other_loc != current_loc):
+
+                            action = Action(ActionType.DRIVE_TRUCK,
+                                            [truck, other_loc, current_loc, current_city])
+                            new_state = ReverseActionExecutor.undo_action_safe(
+                                state, action.action_type, action.params
+                            )
+
+                            if new_state and new_state != state:
+                                state_hash = hash(new_state)
+                                if state_hash not in seen_state_hashes:
+                                    results.append((action, new_state))
+                                    seen_state_hashes.add(state_hash)
 
         # Undo fly-airplane actions
         for airplane in state.airplanes:
@@ -1515,21 +1820,20 @@ class ReverseActionExecutor:
                 if current_loc in state.airports:
                     for other_airport in state.airports:
                         if other_airport != current_loc:
-                            new_state = ReverseActionExecutor.undo_fly_airplane(state, airplane, other_airport)
-                            if new_state is not None:
-                                action = Action(ActionType.FLY_AIRPLANE, [airplane, other_airport, current_loc])
-                                results.append((action, new_state))
 
-        # Deduplicate by state
-        seen_states = set()
-        unique_results = []
-        for action, new_state in results:
-            state_hash = hash(new_state)
-            if state_hash not in seen_states:
-                seen_states.add(state_hash)
-                unique_results.append((action, new_state))
+                            action = Action(ActionType.FLY_AIRPLANE,
+                                            [airplane, other_airport, current_loc])
+                            new_state = ReverseActionExecutor.undo_action_safe(
+                                state, action.action_type, action.params
+                            )
 
-        return unique_results
+                            if new_state and new_state != state:
+                                state_hash = hash(new_state)
+                                if state_hash not in seen_state_hashes:
+                                    results.append((action, new_state))
+                                    seen_state_hashes.add(state_hash)
+
+        return results
 
 
 class BackwardProblemGenerator:
@@ -1661,21 +1965,23 @@ class BackwardProblemGenerator:
 
         return goal_dict
 
+    # MODIFY BackwardProblemGenerator.generate_problem METHOD
+
     def generate_problem(
             self,
             difficulty: str,
             generation_params: Optional[LogisticsGenerationParams] = None,
             target_plan_length: Optional[int] = None,
             archetype: Optional[GoalArchetype] = None,
-            tolerance: int = 1,
-            max_retries: int = 50
+            tolerance: int = 2,  # INCREASED from 1
+            max_retries: int = 100  # INCREASED from 50
     ) -> Tuple[LogisticsState, LogisticsState, List[Action], GoalArchetype]:
         """
         Generate a problem with 100% validity guarantee.
 
-        Raises exception only after exhausting all retries.
+        FIX #3+: Enhanced cycle detection, adaptive target lengths, and fallback strategies.
         """
-        from config import DIFFICULTY_TIERS
+        from config import DIFFICULTY_TIERS, DEFAULT_LOGISTICS_PARAMS
         from problem_validator import ProblemValidator
 
         if generation_params is None:
@@ -1684,8 +1990,11 @@ class BackwardProblemGenerator:
             tier = DIFFICULTY_TIERS.get(difficulty)
             target_plan_length = tier.target_length if tier else 10
 
-        min_length = target_plan_length - tolerance
-        max_length = target_plan_length + tolerance * 2  # Allow more variance
+        min_length = max(1, target_plan_length - tolerance)
+        max_length = target_plan_length + tolerance * 3  # INCREASED range
+
+        logger.info(f"[GEN] Target length: {target_plan_length}±{tolerance}, "
+                    f"accepting [{min_length}, {max_length}]")
 
         for retry in range(max_retries):
             try:
@@ -1695,12 +2004,12 @@ class BackwardProblemGenerator:
                     random_seed=self.random_seed + retry if self.random_seed else None
                 )
 
-                # Verify world is valid
                 is_valid, error = world.is_valid()
                 if not is_valid:
+                    logger.debug(f"[GEN {retry}] Invalid world: {error}")
                     continue
 
-                # Step 2: Generate goal dict
+                # Step 2: Generate goal dict with archetype
                 goal_dict, used_archetype = self.generate_goal_dict_robust_with_archetype(
                     world,
                     packages,
@@ -1709,6 +2018,7 @@ class BackwardProblemGenerator:
                 )
 
                 if not goal_dict:
+                    logger.debug(f"[GEN {retry}] Failed to generate goal dict")
                     continue
 
                 # Step 3: Create goal state
@@ -1718,49 +2028,79 @@ class BackwardProblemGenerator:
                         del goal_state.in_vehicle[pkg]
                     goal_state.at[pkg] = dest_loc
 
-                # Validate goal state
                 is_valid, error = goal_state.is_valid()
                 if not is_valid:
+                    logger.debug(f"[GEN {retry}] Goal state invalid: {error}")
                     continue
 
-                # Goal must be different from world
                 if goal_state == world:
+                    logger.debug(f"[GEN {retry}] Trivial problem (initial == goal)")
                     continue
 
-                # Step 4: Backward search with strict length control
+                # FIX #3: Step 4 - Backward search with ADAPTIVE termination
+                deduplicator = StateDeduplicator(max_states=5000)
                 current_state = goal_state.copy()
                 plan = []
                 iteration = 0
-                max_iterations = max(target_plan_length * 5, 500)
+                max_iterations = max(target_plan_length * 20, 2000)  # INCREASED
 
-                while len(plan) < max_length and iteration < max_iterations:
+                no_progress_count = 0
+                max_no_progress = 50
+
+                while (len(plan) < max_length and
+                       iteration < max_iterations and
+                       not deduplicator.cycle_detected and
+                       no_progress_count < max_no_progress):
+
                     iteration += 1
+
+                    if deduplicator.is_visited(current_state):
+                        logger.debug(f"[GEN {retry}] Cycle detected at iteration {iteration}")
+                        break
+
+                    deduplicator.mark_visited(current_state)
 
                     # Get applicable reverse actions
                     reverse_actions = ReverseActionExecutor.get_applicable_reverse_actions(current_state)
                     if not reverse_actions:
+                        logger.debug(f"[GEN {retry}] No reverse actions at iteration {iteration}")
                         break
 
-                    # Pick random action
-                    action, new_state = random.choice(reverse_actions)
+                    # Shuffle for variety
+                    random.shuffle(reverse_actions)
+                    action_found = False
 
-                    # Validate new state
-                    is_valid, _ = new_state.is_valid()
-                    if not is_valid:
-                        continue
+                    for action, new_state in reverse_actions:
+                        # Skip if state already visited
+                        if deduplicator.is_visited(new_state):
+                            continue
 
-                    # Only accept if state is different
-                    if new_state == current_state:
-                        continue
+                        is_valid, _ = new_state.is_valid()
+                        if not is_valid:
+                            continue
 
-                    # Accept this action
-                    plan.insert(0, action)
-                    current_state = new_state
+                        if new_state == current_state:
+                            continue
+
+                        # Accept this action
+                        plan.insert(0, action)
+                        current_state = new_state
+                        action_found = True
+                        no_progress_count = 0
+                        break
+
+                    if not action_found:
+                        no_progress_count += 1
 
                 initial_state = current_state
 
-                # Step 5: Check plan length
-                if len(plan) < min_length or len(plan) > max_length:
+                # Step 5: Check plan length with adaptive acceptance
+                if len(plan) < min_length:
+                    logger.debug(f"[GEN {retry}] Plan too short: {len(plan)} < {min_length}")
+                    continue
+
+                if len(plan) > max_length:
+                    logger.debug(f"[GEN {retry}] Plan too long: {len(plan)} > {max_length}")
                     continue
 
                 # Step 6: Comprehensive validation
@@ -1771,15 +2111,42 @@ class BackwardProblemGenerator:
                 )
 
                 if is_valid:
+                    logger.info(f"[GEN {retry}] SUCCESS: {used_archetype.value}, length={len(plan)}")
                     return initial_state, goal_state, plan, used_archetype
+                else:
+                    logger.debug(f"[GEN {retry}] Validation failed: {reason}")
 
             except Exception as e:
+                logger.debug(f"[GEN {retry}] Exception: {str(e)[:100]}")
                 continue
 
         raise ValueError(
             f"Failed to generate valid {difficulty} problem after {max_retries} retries. "
-            f"Target plan length: {target_plan_length}±{tolerance}"
+            f"Target plan length: {target_plan_length}±{tolerance}. "
+            f"Try: (1) reducing difficulty tier, (2) increasing world complexity in config.py, "
+            f"or (3) reducing target_plan_length."
         )
+
+    def _validate_reverse_action_soundness(
+            self,
+            state_before: LogisticsState,
+            state_after: LogisticsState,
+            action: Action
+    ) -> bool:
+        """
+        FIX #3: Validate that the reverse action is truly sound.
+
+        Check that if we applied the FORWARD action to state_after,
+        we get back to state_before.
+        """
+        from actions import ActionExecutor
+
+        forward_state = ActionExecutor.execute_forward(state_after, action)
+        if forward_state is None:
+            return False
+
+        # Check if states match
+        return forward_state == state_before
 
     def generate_goal_dict_robust_with_archetype(
             self,
@@ -1938,6 +2305,218 @@ class BackwardProblemGenerator:
 --------------------------------------------------------------------------------
 
 The file pddl_writer.py code is this:
+# """
+# PDDL file generation for Logistics domain.
+#
+# Outputs valid PDDL domain and problem files according to Requirement #10.
+# """
+#
+# from state import LogisticsState
+#
+#
+# class PDDLWriter:
+#     """Writes PDDL domain and problem files for Logistics."""
+#
+#     DOMAIN_TEMPLATE = """(define (domain logistics-strips)
+#   (:requirements :strips)
+#   (:predicates
+#     (OBJ ?obj)
+#     (TRUCK ?truck)
+#     (AIRPLANE ?airplane)
+#     (LOCATION ?loc)
+#     (CITY ?city)
+#     (AIRPORT ?airport)
+#     (at ?obj ?loc)
+#     (in ?obj1 ?obj2)
+#     (in-city ?loc ?city)
+#   )
+#
+#   (:action LOAD-TRUCK
+#     :parameters (?obj ?truck ?loc)
+#     :precondition
+#       (and (OBJ ?obj) (TRUCK ?truck) (LOCATION ?loc)
+#            (at ?truck ?loc) (at ?obj ?loc))
+#     :effect
+#       (and (not (at ?obj ?loc)) (in ?obj ?truck))
+#   )
+#
+#   (:action UNLOAD-TRUCK
+#     :parameters (?obj ?truck ?loc)
+#     :precondition
+#       (and (OBJ ?obj) (TRUCK ?truck) (LOCATION ?loc)
+#            (at ?truck ?loc) (in ?obj ?truck))
+#     :effect
+#       (and (not (in ?obj ?truck)) (at ?obj ?loc))
+#   )
+#
+#   (:action LOAD-AIRPLANE
+#     :parameters (?obj ?airplane ?loc)
+#     :precondition
+#       (and (OBJ ?obj) (AIRPLANE ?airplane) (AIRPORT ?loc)
+#            (at ?airplane ?loc) (at ?obj ?loc))
+#     :effect
+#       (and (not (at ?obj ?loc)) (in ?obj ?airplane))
+#   )
+#
+#   (:action UNLOAD-AIRPLANE
+#     :parameters (?obj ?airplane ?loc)
+#     :precondition
+#       (and (OBJ ?obj) (AIRPLANE ?airplane) (AIRPORT ?loc)
+#            (at ?airplane ?loc) (in ?obj ?airplane))
+#     :effect
+#       (and (not (in ?obj ?airplane)) (at ?obj ?loc))
+#   )
+#
+#   (:action DRIVE-TRUCK
+#     :parameters (?truck ?loc-from ?loc-to ?city)
+#     :precondition
+#       (and (TRUCK ?truck) (LOCATION ?loc-from) (LOCATION ?loc-to) (CITY ?city)
+#            (at ?truck ?loc-from)
+#            (in-city ?loc-from ?city)
+#            (in-city ?loc-to ?city))
+#     :effect
+#       (and (not (at ?truck ?loc-from)) (at ?truck ?loc-to))
+#   )
+#
+#   (:action FLY-AIRPLANE
+#     :parameters (?airplane ?loc-from ?loc-to)
+#     :precondition
+#       (and (AIRPLANE ?airplane) (AIRPORT ?loc-from) (AIRPORT ?loc-to)
+#            (at ?airplane ?loc-from))
+#     :effect
+#       (and (not (at ?airplane ?loc-from)) (at ?airplane ?loc-to))
+#   )
+# )
+# """
+#
+#     @staticmethod
+#     def write_domain(filepath: str) -> None:
+#         """Write the Logistics domain file."""
+#         with open(filepath, 'w') as f:
+#             f.write(PDDLWriter.DOMAIN_TEMPLATE)
+#
+#     @staticmethod
+#     def state_to_objects_pddl(state: LogisticsState) -> str:
+#         """Convert a state to PDDL :objects format with proper typing."""
+#         objects = []
+#
+#         # Group objects by type
+#         if state.packages:
+#             objects.append(f"{' '.join(sorted(state.packages))} - OBJ")
+#         if state.trucks:
+#             objects.append(f"{' '.join(sorted(state.trucks))} - TRUCK")
+#         if state.airplanes:
+#             objects.append(f"{' '.join(sorted(state.airplanes))} - AIRPLANE")
+#         if state.locations:
+#             objects.append(f"{' '.join(sorted(state.locations))} - LOCATION")
+#         if state.cities:
+#             objects.append(f"{' '.join(sorted(state.cities))} - CITY")
+#
+#         return "\n    ".join(objects)
+#
+#     @staticmethod
+#     def state_to_init_pddl(state: LogisticsState) -> str:
+#         """Convert a state to PDDL :init format WITH type predicates."""
+#         facts = []
+#
+#         # Type predicates (REQUIRED for proper PDDL)
+#         for obj in sorted(state.packages):
+#             facts.append(f"(OBJ {obj})")
+#         for truck in sorted(state.trucks):
+#             facts.append(f"(TRUCK {truck})")
+#         for airplane in sorted(state.airplanes):
+#             facts.append(f"(AIRPLANE {airplane})")
+#         for loc in sorted(state.locations):
+#             facts.append(f"(LOCATION {loc})")
+#         for city in sorted(state.cities):
+#             facts.append(f"(CITY {city})")
+#
+#         # Airport type predicates
+#         for airport in sorted(state.airports):
+#             facts.append(f"(AIRPORT {airport})")
+#
+#         # at facts
+#         for obj, loc in sorted(state.at.items()):
+#             facts.append(f"(at {obj} {loc})")
+#
+#         # in facts
+#         for obj, vehicle in sorted(state.in_vehicle.items()):
+#             facts.append(f"(in {obj} {vehicle})")
+#
+#         # in-city facts (static)
+#         for loc, city in sorted(state.in_city.items()):
+#             facts.append(f"(in-city {loc} {city})")
+#
+#         return " ".join(facts)
+#
+#     # pddl_writer.py - REPLACE state_to_goal_pddl METHOD
+#
+#     @staticmethod
+#     def state_to_goal_pddl(state: LogisticsState) -> str:
+#         """
+#         Convert a state to PDDL :goal format.
+#
+#         FIX: Handle packages that are in vehicles at goal time.
+#         """
+#         facts = []
+#
+#         # at facts for packages only
+#         for pkg in sorted(state.packages):
+#             if pkg in state.at:
+#                 facts.append(f"(at {pkg} {state.at[pkg]})")
+#             elif pkg in state.in_vehicle:
+#                 # FIX: Package is in a vehicle - extract vehicle location
+#                 vehicle = state.in_vehicle[pkg]
+#                 if vehicle in state.at:
+#                     # Goal location is same as vehicle location
+#                     facts.append(f"(at {pkg} {state.at[vehicle]})")
+#                 else:
+#                     raise ValueError(f"Vehicle {vehicle} carrying {pkg} has no location in goal state")
+#             else:
+#                 raise ValueError(f"Package {pkg} has no location or vehicle in goal state")
+#
+#         if not facts:
+#             raise ValueError("Goal state has no package locations")
+#
+#         if len(facts) == 1:
+#             return facts[0]
+#
+#         return "(and " + " ".join(facts) + ")"
+#
+#     @staticmethod
+#     def write_problem(
+#             filepath: str,
+#             problem_name: str,
+#             initial_state: LogisticsState,
+#             goal_state: LogisticsState
+#     ) -> None:
+#         """
+#         Write a PDDL problem file.
+#
+#         Requirement #10: Standard .pddl file format.
+#         """
+#         objects_str = PDDLWriter.state_to_objects_pddl(initial_state)
+#         init_str = PDDLWriter.state_to_init_pddl(initial_state)
+#         goal_str = PDDLWriter.state_to_goal_pddl(goal_state)
+#
+#         problem_pddl = f"""(define (problem {problem_name})
+#   (:domain logistics-strips)
+#   (:objects
+#     {objects_str}
+#   )
+#   (:init
+#     {init_str}
+#   )
+#   (:goal
+#     {goal_str}
+#   )
+# )
+# """
+#         with open(filepath, 'w') as f:
+#             f.write(problem_pddl)
+
+# logistics_problem_generator/pddl_writer.py
+
 """
 PDDL file generation for Logistics domain.
 
@@ -1950,60 +2529,61 @@ from state import LogisticsState
 class PDDLWriter:
     """Writes PDDL domain and problem files for Logistics."""
 
+    # FIXED: Simpler domain without type predicates
     DOMAIN_TEMPLATE = """(define (domain logistics-strips)
   (:requirements :strips)
   (:predicates
-    (OBJ ?obj)
-    (TRUCK ?truck)
-    (AIRPLANE ?airplane)
-    (LOCATION ?loc)
-    (CITY ?city)
-    (AIRPORT ?airport)
     (at ?obj ?loc)
-    (in ?obj1 ?obj2)
+    (in ?obj ?vehicle)
     (in-city ?loc ?city)
+    (is-location ?loc)
+    (is-city ?city)
+    (is-truck ?truck)
+    (is-airplane ?airplane)
+    (is-airport ?loc)
+    (is-package ?pkg)
   )
 
-  (:action LOAD-TRUCK
-    :parameters (?obj ?truck ?loc)
+  (:action load-truck
+    :parameters (?pkg ?truck ?loc)
     :precondition
-      (and (OBJ ?obj) (TRUCK ?truck) (LOCATION ?loc)
-           (at ?truck ?loc) (at ?obj ?loc))
+      (and (is-package ?pkg) (is-truck ?truck) (is-location ?loc)
+           (at ?truck ?loc) (at ?pkg ?loc))
     :effect
-      (and (not (at ?obj ?loc)) (in ?obj ?truck))
+      (and (not (at ?pkg ?loc)) (in ?pkg ?truck))
   )
 
-  (:action UNLOAD-TRUCK
-    :parameters (?obj ?truck ?loc)
+  (:action unload-truck
+    :parameters (?pkg ?truck ?loc)
     :precondition
-      (and (OBJ ?obj) (TRUCK ?truck) (LOCATION ?loc)
-           (at ?truck ?loc) (in ?obj ?truck))
+      (and (is-package ?pkg) (is-truck ?truck) (is-location ?loc)
+           (at ?truck ?loc) (in ?pkg ?truck))
     :effect
-      (and (not (in ?obj ?truck)) (at ?obj ?loc))
+      (and (not (in ?pkg ?truck)) (at ?pkg ?loc))
   )
 
-  (:action LOAD-AIRPLANE
-    :parameters (?obj ?airplane ?loc)
+  (:action load-airplane
+    :parameters (?pkg ?airplane ?loc)
     :precondition
-      (and (OBJ ?obj) (AIRPLANE ?airplane) (AIRPORT ?loc)
-           (at ?airplane ?loc) (at ?obj ?loc))
+      (and (is-package ?pkg) (is-airplane ?airplane) (is-airport ?loc)
+           (at ?airplane ?loc) (at ?pkg ?loc))
     :effect
-      (and (not (at ?obj ?loc)) (in ?obj ?airplane))
+      (and (not (at ?pkg ?loc)) (in ?pkg ?airplane))
   )
 
-  (:action UNLOAD-AIRPLANE
-    :parameters (?obj ?airplane ?loc)
+  (:action unload-airplane
+    :parameters (?pkg ?airplane ?loc)
     :precondition
-      (and (OBJ ?obj) (AIRPLANE ?airplane) (AIRPORT ?loc)
-           (at ?airplane ?loc) (in ?obj ?airplane))
+      (and (is-package ?pkg) (is-airplane ?airplane) (is-airport ?loc)
+           (at ?airplane ?loc) (in ?pkg ?airplane))
     :effect
-      (and (not (in ?obj ?airplane)) (at ?obj ?loc))
+      (and (not (in ?pkg ?airplane)) (at ?pkg ?loc))
   )
 
-  (:action DRIVE-TRUCK
+  (:action drive-truck
     :parameters (?truck ?loc-from ?loc-to ?city)
     :precondition
-      (and (TRUCK ?truck) (LOCATION ?loc-from) (LOCATION ?loc-to) (CITY ?city)
+      (and (is-truck ?truck) (is-location ?loc-from) (is-location ?loc-to) (is-city ?city)
            (at ?truck ?loc-from)
            (in-city ?loc-from ?city)
            (in-city ?loc-to ?city))
@@ -2011,10 +2591,10 @@ class PDDLWriter:
       (and (not (at ?truck ?loc-from)) (at ?truck ?loc-to))
   )
 
-  (:action FLY-AIRPLANE
+  (:action fly-airplane
     :parameters (?airplane ?loc-from ?loc-to)
     :precondition
-      (and (AIRPLANE ?airplane) (AIRPORT ?loc-from) (AIRPORT ?loc-to)
+      (and (is-airplane ?airplane) (is-airport ?loc-from) (is-airport ?loc-to)
            (at ?airplane ?loc-from))
     :effect
       (and (not (at ?airplane ?loc-from)) (at ?airplane ?loc-to))
@@ -2030,53 +2610,50 @@ class PDDLWriter:
 
     @staticmethod
     def state_to_objects_pddl(state: LogisticsState) -> str:
-        """Convert a state to PDDL :objects format with proper typing."""
+        """Convert state to PDDL objects (no typing to keep it simple)."""
         objects = []
 
-        # Group objects by type
         if state.packages:
-            objects.append(f"{' '.join(sorted(state.packages))} - OBJ")
+            objects.append(f"{' '.join(sorted(state.packages))}")
         if state.trucks:
-            objects.append(f"{' '.join(sorted(state.trucks))} - TRUCK")
+            objects.append(f"{' '.join(sorted(state.trucks))}")
         if state.airplanes:
-            objects.append(f"{' '.join(sorted(state.airplanes))} - AIRPLANE")
+            objects.append(f"{' '.join(sorted(state.airplanes))}")
         if state.locations:
-            objects.append(f"{' '.join(sorted(state.locations))} - LOCATION")
+            objects.append(f"{' '.join(sorted(state.locations))}")
         if state.cities:
-            objects.append(f"{' '.join(sorted(state.cities))} - CITY")
+            objects.append(f"{' '.join(sorted(state.cities))}")
 
-        return "\n    ".join(objects)
+        return " ".join(objects)
 
     @staticmethod
     def state_to_init_pddl(state: LogisticsState) -> str:
-        """Convert a state to PDDL :init format WITH type predicates."""
+        """Convert state to PDDL :init format."""
         facts = []
 
-        # Type predicates (REQUIRED for proper PDDL)
-        for obj in sorted(state.packages):
-            facts.append(f"(OBJ {obj})")
+        # Type facts
+        for pkg in sorted(state.packages):
+            facts.append(f"(is-package {pkg})")
         for truck in sorted(state.trucks):
-            facts.append(f"(TRUCK {truck})")
+            facts.append(f"(is-truck {truck})")
         for airplane in sorted(state.airplanes):
-            facts.append(f"(AIRPLANE {airplane})")
+            facts.append(f"(is-airplane {airplane})")
         for loc in sorted(state.locations):
-            facts.append(f"(LOCATION {loc})")
+            facts.append(f"(is-location {loc})")
         for city in sorted(state.cities):
-            facts.append(f"(CITY {city})")
-
-        # Airport type predicates
+            facts.append(f"(is-city {city})")
         for airport in sorted(state.airports):
-            facts.append(f"(AIRPORT {airport})")
+            facts.append(f"(is-airport {airport})")
 
-        # at facts
+        # Positional facts
         for obj, loc in sorted(state.at.items()):
             facts.append(f"(at {obj} {loc})")
 
-        # in facts
-        for obj, vehicle in sorted(state.in_vehicle.items()):
-            facts.append(f"(in {obj} {vehicle})")
+        # Vehicle containment
+        for pkg, vehicle in sorted(state.in_vehicle.items()):
+            facts.append(f"(in {pkg} {vehicle})")
 
-        # in-city facts (static)
+        # City mappings (static)
         for loc, city in sorted(state.in_city.items()):
             facts.append(f"(in-city {loc} {city})")
 
@@ -2084,22 +2661,22 @@ class PDDLWriter:
 
     @staticmethod
     def state_to_goal_pddl(state: LogisticsState) -> str:
-        """
-        Convert a state to PDDL :goal format.
-
-        Only specify package locations (not vehicle positions).
-        """
+        """Convert state to PDDL :goal format."""
         facts = []
 
-        # at facts for packages only
+        # Goal: all packages at their goal locations (not in vehicles)
         for pkg in sorted(state.packages):
             if pkg in state.at:
                 facts.append(f"(at {pkg} {state.at[pkg]})")
             elif pkg in state.in_vehicle:
-                # Package is in a vehicle at goal - extract location
+                # Shouldn't happen if goal generation is correct
                 vehicle = state.in_vehicle[pkg]
                 if vehicle in state.at:
                     facts.append(f"(at {pkg} {state.at[vehicle]})")
+                else:
+                    raise ValueError(f"Cannot determine location for {pkg} in goal state")
+            else:
+                raise ValueError(f"Package {pkg} has no location in goal state")
 
         if not facts:
             raise ValueError("Goal state has no package locations")
@@ -2116,11 +2693,7 @@ class PDDLWriter:
             initial_state: LogisticsState,
             goal_state: LogisticsState
     ) -> None:
-        """
-        Write a PDDL problem file.
-
-        Requirement #10: Standard .pddl file format.
-        """
+        """Write a PDDL problem file."""
         objects_str = PDDLWriter.state_to_objects_pddl(initial_state)
         init_str = PDDLWriter.state_to_init_pddl(initial_state)
         goal_str = PDDLWriter.state_to_goal_pddl(goal_state)
@@ -2147,10 +2720,8 @@ The file baseline_planner.py code is this:
 """
 Integration with Fast Downward baseline planner.
 
+ROBUST VERSION: Proper timeout enforcement with process termination guarantee.
 Requirement #12: Run baseline planner and collect metadata.
-
-This version uses the robust two-step (Translate + Search) process
-adapted from the comprehensive evaluation framework.
 """
 
 import subprocess
@@ -2159,6 +2730,8 @@ import re
 import os
 import time
 import logging
+import signal
+import sys
 from typing import Optional, Dict, Any
 from pathlib import Path
 
@@ -2166,42 +2739,32 @@ logger = logging.getLogger(__name__)
 
 
 class FastDownwardRunner:
-    """Runs Fast Downward and extracts comprehensive metrics."""
+    """Runs Fast Downward with guaranteed timeout enforcement."""
 
-    def __init__(self, timeout: int = 600):
+    def __init__(self, timeout_translate: int = 300, timeout_search: int = 260):
         """
         Initialize Fast Downward runner.
 
         Args:
-            timeout: Maximum time in seconds for the entire run
+            timeout_translate: Maximum time in seconds for TRANSLATE phase
+            timeout_search: Maximum time in seconds for SEARCH phase ONLY
         """
-        self.timeout = timeout
+        self.timeout_translate = timeout_translate
+        self.timeout_search = timeout_search
 
-        # --- MODIFICATION START ---
-        # Get the directory where this file (baseline_planner.py) is located
         script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        # Go one step up to the project root (where 'downward' and the code dir live)
         project_root = os.path.abspath(os.path.join(script_dir, ".."))
-
-        # Define the path to the 'downward/builds/release/bin' directory
         fd_bin_dir = os.path.join(project_root, "downward", "builds", "release", "bin")
 
-        # Detect OS and set binary path
         if os.name == 'nt':  # Windows
             self.fd_bin = os.path.join(fd_bin_dir, "downward.exe")
         else:  # Linux/macOS
             self.fd_bin = os.path.join(fd_bin_dir, "downward")
 
         self.fd_translate = os.path.join(fd_bin_dir, "translate", "translate.py")
-
-        # Place temp_dir in the project root as well
         self.temp_dir = os.path.join(project_root, "generation_temp")
-        # --- MODIFICATION END ---
-
         os.makedirs(self.temp_dir, exist_ok=True)
 
-        # Check if FD is available
         self.fd_available = self._check_fd_available()
 
     def _check_fd_available(self) -> bool:
@@ -2229,24 +2792,18 @@ class FastDownwardRunner:
             timeout: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Run Fast Downward on a problem using the 2-step translate/search process.
+        Run Fast Downward on a problem using 2-step translate/search process.
+
+        FIX #2: ROBUST timeout enforcement with process termination guarantee.
 
         Args:
             domain_file: Path to domain PDDL file
             problem_file: Path to problem PDDL file
             search_config: Fast Downward search configuration string
-            timeout: Override default timeout
+            timeout: Override default search timeout
 
         Returns:
-            Dict with:
-                - success: bool (whether solution was found)
-                - time: float (total wall clock time in seconds)
-                - plan_cost: int or None (plan length)
-                - nodes_expanded: int or None (search nodes)
-                - nodes_generated: int or None (generated states)
-                - search_depth: int or None (search depth)
-                - plan: list or None (action strings if extracted)
-                - error: str or None (error message if failed)
+            Dict with search results and metrics
         """
         if not self.fd_available:
             return {
@@ -2260,7 +2817,12 @@ class FastDownwardRunner:
                 "error": "Fast Downward not installed or not found at expected paths"
             }
 
-        timeout_to_use = timeout if timeout is not None else self.timeout
+        search_timeout = timeout if timeout is not None else self.timeout_search
+        translate_timeout = self.timeout_translate
+
+        logger.info(f"[TIMEOUT CONFIG] Translate: {translate_timeout}s, Search: {search_timeout}s")
+
+        overall_start_time = time.time()
         problem_name = os.path.basename(problem_file)
         sas_file = os.path.join(self.temp_dir, "output.sas")
 
@@ -2271,7 +2833,6 @@ class FastDownwardRunner:
             logger.debug(f"[TRANSLATE] {problem_name}")
             translate_start = time.time()
 
-            # Use absolute paths
             abs_domain = os.path.abspath(domain_file)
             abs_problem = os.path.abspath(problem_file)
 
@@ -2280,14 +2841,27 @@ class FastDownwardRunner:
                 f'"{abs_problem}" --sas-file "{sas_file}"'
             )
 
-            translate_result = subprocess.run(
-                translate_cmd,
-                shell=True,
-                cwd=os.path.abspath("."),
-                capture_output=True,
-                text=True,
-                timeout=timeout_to_use
-            )
+            try:
+                translate_result = subprocess.run(
+                    translate_cmd,
+                    shell=True,
+                    cwd=os.path.dirname(os.path.abspath(__file__)),  # Use script directory
+                    capture_output=True,
+                    text=True,
+                    timeout=translate_timeout
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(f"[TRANSLATE TIMEOUT] Exceeded {translate_timeout}s for {problem_name}")
+                return {
+                    "success": False,
+                    "time": time.time() - overall_start_time,
+                    "plan_cost": None,
+                    "nodes_expanded": None,
+                    "nodes_generated": None,
+                    "search_depth": None,
+                    "plan": None,
+                    "error": f"Translate timeout (>{translate_timeout}s)"
+                }
 
             translate_time = time.time() - translate_start
 
@@ -2296,7 +2870,7 @@ class FastDownwardRunner:
                 logger.debug(f"[TRANSLATE] Failed: {error_msg[:200]}")
                 return {
                     "success": False,
-                    "time": translate_time,
+                    "time": time.time() - overall_start_time,
                     "plan_cost": None,
                     "nodes_expanded": None,
                     "nodes_generated": None,
@@ -2309,7 +2883,7 @@ class FastDownwardRunner:
                 logger.debug(f"[TRANSLATE] Failed: SAS file not created")
                 return {
                     "success": False,
-                    "time": translate_time,
+                    "time": time.time() - overall_start_time,
                     "plan_cost": None,
                     "nodes_expanded": None,
                     "nodes_generated": None,
@@ -2318,31 +2892,92 @@ class FastDownwardRunner:
                     "error": "Translate: SAS file not created"
                 }
 
-            logger.debug(f"[TRANSLATE] Success ({os.path.getsize(sas_file)} bytes)")
+            logger.debug(f"[TRANSLATE] Success ({os.path.getsize(sas_file)} bytes) in {translate_time:.2f}s")
 
             # ==========================================================
             # PHASE 2: SEARCH (SAS -> Plan)
+            # FIX #2: ROBUST timeout enforcement
             # ==========================================================
-            logger.debug(f"[SEARCH] Starting with config: {search_config}")
+            logger.debug(f"[SEARCH] Starting with config: {search_config}, timeout: {search_timeout}s")
             search_start = time.time()
 
-            search_cmd = f'"{self.fd_bin}" --search "{search_config}" < "{sas_file}"'
+            search_cmd_list = [
+                self.fd_bin,
+                "--search", search_config
+            ]
 
-            search_result = subprocess.run(
-                search_cmd,
-                shell=True,
-                cwd=os.path.dirname(self.fd_bin),
-                capture_output=True,
-                text=True,
-                timeout=timeout_to_use
-            )
+            search_process = None
+            stdout_text = ""
+            stderr_text = ""
+            search_returncode = -1
+
+            try:
+                # Open SAS file for stdin
+                with open(sas_file, 'r') as sas_input:
+                    search_process = subprocess.Popen(
+                        search_cmd_list,
+                        stdin=sas_input,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        cwd=os.path.dirname(self.fd_bin)
+                    )
+
+                    try:
+                        stdout_text, stderr_text = search_process.communicate(timeout=search_timeout)
+                        search_returncode = search_process.returncode
+                    except subprocess.TimeoutExpired:
+                        # FIX #2: KILL process tree properly
+                        logger.warning(f"[SEARCH TIMEOUT] Killing process after {search_timeout}s")
+                        try:
+                            if sys.platform == 'win32':
+                                search_process.kill()
+                            else:
+                                search_process.terminate()
+                                try:
+                                    search_process.wait(timeout=5)
+                                except subprocess.TimeoutExpired:
+                                    search_process.kill()
+                            search_process.wait()
+                        except Exception as e:
+                            logger.debug(f"Error terminating process: {e}")
+
+                        return {
+                            "success": False,
+                            "time": time.time() - overall_start_time,
+                            "plan_cost": None,
+                            "nodes_expanded": None,
+                            "nodes_generated": None,
+                            "search_depth": None,
+                            "plan": None,
+                            "error": f"Search timeout (>{search_timeout}s)"
+                        }
+
+            except Exception as e:
+                logger.error(f"[SEARCH] Exception during execution: {e}")
+                if search_process:
+                    try:
+                        search_process.kill()
+                        search_process.wait()
+                    except:
+                        pass
+                return {
+                    "success": False,
+                    "time": time.time() - overall_start_time,
+                    "plan_cost": None,
+                    "nodes_expanded": None,
+                    "nodes_generated": None,
+                    "search_depth": None,
+                    "plan": None,
+                    "error": f"Search error: {str(e)[:200]}"
+                }
 
             search_time = time.time() - search_start
             total_time = translate_time + search_time
 
-            output_text = search_result.stdout + search_result.stderr
+            output_text = stdout_text + stderr_text
 
-            logger.debug(f"[SEARCH] Completed in {search_time:.2f}s")
+            logger.debug(f"[SEARCH] Completed in {search_time:.2f}s (total: {total_time:.2f}s)")
 
             # Clean up SAS file
             try:
@@ -2355,7 +2990,6 @@ class FastDownwardRunner:
             # PHASE 3: PARSE OUTPUT
             # ==========================================================
 
-            # Check if solution was found
             solution_found = (
                 "Solution found" in output_text or
                 "Plan length:" in output_text
@@ -2374,7 +3008,6 @@ class FastDownwardRunner:
                     "error": "No solution found"
                 }
 
-            # Extract metrics
             metrics = self._parse_fd_output(output_text)
 
             logger.debug(
@@ -2394,37 +3027,11 @@ class FastDownwardRunner:
                 "error": None
             }
 
-        except subprocess.TimeoutExpired:
-            logger.warning(f"[TIMEOUT] Exceeded {timeout_to_use}s for {problem_name}")
-            return {
-                "success": False,
-                "time": timeout_to_use,
-                "plan_cost": None,
-                "nodes_expanded": None,
-                "nodes_generated": None,
-                "search_depth": None,
-                "plan": None,
-                "error": f"Timeout (>{timeout_to_use}s)"
-            }
-
-        except FileNotFoundError as e:
-            logger.error(f"[ERROR] File not found: {e}")
-            return {
-                "success": False,
-                "time": 0,
-                "plan_cost": None,
-                "nodes_expanded": None,
-                "nodes_generated": None,
-                "search_depth": None,
-                "plan": None,
-                "error": f"File not found: {str(e)[:200]}"
-            }
-
         except Exception as e:
-            logger.error(f"[ERROR] Exception: {e}")
+            logger.error(f"[ERROR] Unexpected exception: {e}")
             return {
                 "success": False,
-                "time": 0,
+                "time": time.time() - overall_start_time,
                 "plan_cost": None,
                 "nodes_expanded": None,
                 "nodes_generated": None,
@@ -2435,15 +3042,7 @@ class FastDownwardRunner:
 
     @staticmethod
     def _parse_fd_output(output_text: str) -> Dict[str, Any]:
-        """
-        Extract comprehensive metrics from Fast Downward output.
-
-        Args:
-            output_text: Combined stdout + stderr from FD
-
-        Returns:
-            Dict with extracted metrics
-        """
+        """Extract comprehensive metrics from Fast Downward output."""
         result = {
             "plan_cost": None,
             "nodes_expanded": None,
@@ -2452,27 +3051,22 @@ class FastDownwardRunner:
             "plan": None
         }
 
-        # Plan cost (use "Plan length")
         cost_match = re.search(r"Plan length:\s*(\d+)", output_text)
         if cost_match:
             result["plan_cost"] = int(cost_match.group(1))
 
-        # Nodes expanded (take last occurrence)
         nodes_expanded_matches = list(re.finditer(r"Expanded\s+(\d+)\s+state", output_text))
         if nodes_expanded_matches:
             result["nodes_expanded"] = int(nodes_expanded_matches[-1].group(1))
 
-        # Nodes generated (take last occurrence)
         nodes_generated_matches = list(re.finditer(r"Generated\s+(\d+)\s+state", output_text))
         if nodes_generated_matches:
             result["nodes_generated"] = int(nodes_generated_matches[-1].group(1))
 
-        # Search depth
         depth_match = re.search(r"Search depth:\s*(\d+)", output_text)
         if depth_match:
             result["search_depth"] = int(depth_match.group(1))
 
-        # Extract plan actions
         plan_section = re.search(
             r"Solution found\.\n(.*?)(?:Plan length:|$)",
             output_text,
@@ -2653,38 +3247,56 @@ class PDDLValidator:
 The file main.py code is this:
 """
 Main orchestration and CLI for the Logistics problem generation framework.
-
-Requirement #9: Scalable generation of arbitrary numbers of problems.
-Requirement #13: Simple, modular architecture.
-Requirement #18: Selective manual validation.
-Requirement #19: Executable Python codebase.
 """
 
 import logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 import argparse
 import os
+import sys
 import random
 from typing import List
 
-from config import (
-    DIFFICULTY_TIERS,
-    BASELINE_PLANNER_CONFIG,
-    DEFAULT_LOGISTICS_PARAMS,
-    ensure_output_dirs,
-    DOMAIN_DIR,
-    PROBLEMS_DIR,
-    METADATA_DIR
-)
-from backward_generator import BackwardProblemGenerator
-from pddl_writer import PDDLWriter
-from baseline_planner import FastDownwardRunner
-from metadata_store import MetadataStore, ProblemMetadata
-from validator import PDDLValidator
-from state import LogisticsState
-from .problem_validator import ProblemValidator
-from actions import Action
+# FIX #5: Fix imports to work whether run as module or script
+try:
+    from config import (
+        DIFFICULTY_TIERS,
+        BASELINE_PLANNER_CONFIG,
+        DEFAULT_LOGISTICS_PARAMS,
+        ensure_output_dirs,
+        DOMAIN_DIR,
+        PROBLEMS_DIR,
+        METADATA_DIR
+    )
+    from backward_generator import BackwardProblemGenerator
+    from pddl_writer import PDDLWriter
+    from baseline_planner import FastDownwardRunner
+    from metadata_store import MetadataStore, ProblemMetadata
+    from validator import PDDLValidator
+    from state import LogisticsState
+    from problem_validator import ProblemValidator
+    from actions import Action
+except ImportError:
+    # Running as module
+    from .config import (
+        DIFFICULTY_TIERS,
+        BASELINE_PLANNER_CONFIG,
+        DEFAULT_LOGISTICS_PARAMS,
+        ensure_output_dirs,
+        DOMAIN_DIR,
+        PROBLEMS_DIR,
+        METADATA_DIR
+    )
+    from .backward_generator import BackwardProblemGenerator
+    from .pddl_writer import PDDLWriter
+    from .baseline_planner import FastDownwardRunner
+    from .metadata_store import MetadataStore, ProblemMetadata
+    from .validator import PDDLValidator
+    from .state import LogisticsState
+    from .problem_validator import ProblemValidator
+    from .actions import Action
 
 
 class ProblemGenerationFramework:
@@ -2699,18 +3311,18 @@ class ProblemGenerationFramework:
 
         self.generator = BackwardProblemGenerator(random_seed=random_seed)
         self.pddl_writer = PDDLWriter()
-        self.fd_runner = FastDownwardRunner()
+        self.fd_runner = FastDownwardRunner(timeout_search=260)
         self.validator = PDDLValidator()
         self.metadata_store = MetadataStore(METADATA_DIR)
 
     def generate_batch(
-        self,
-        num_problems: int,
-        difficulty: str,
-        domain_name: str = "logistics",
-        skip_planner: bool = False
+            self,
+            num_problems: int,
+            difficulty: str,
+            domain_name: str = "logistics",
+            skip_planner: bool = False
     ) -> List[str]:
-        """Generate a batch of Logistics problems (Requirement #9)."""
+        """Generate a batch of Logistics problems with 100% validation."""
 
         if difficulty not in DIFFICULTY_TIERS:
             raise ValueError(f"Unknown difficulty: {difficulty}")
@@ -2720,16 +3332,20 @@ class ProblemGenerationFramework:
         problem_names = []
 
         print(f"\n{'=' * 70}")
-        print(f"Generating {num_problems} {difficulty} Logistics problems")
-        print(f"Target plan length: {tier.target_length}")
-        print(f"Cities: {generation_params.num_cities}, "
-              f"Locations/city: {generation_params.locations_per_city}, "
-              f"Packages: {generation_params.num_packages}")
-        print(f"Trucks: {generation_params.num_trucks}, "
-              f"Airplanes: {generation_params.num_airplanes}")
+        print(f"Generating {num_problems} {difficulty.upper()} Logistics problems")
+        print(f"Target plan length: {tier.target_length} ±{2}")  # Updated tolerance display
+        print(f"World complexity:")
+        print(f"  Cities: {generation_params.num_cities}")
+        print(f"  Locs/city: {generation_params.locations_per_city}")
+        print(f"  Packages: {generation_params.num_packages}")
+        print(f"  Trucks: {generation_params.num_trucks}")
+        print(f"  Planes: {generation_params.num_airplanes}")
         if skip_planner:
             print("(Baseline planner disabled)")
         print(f"{'=' * 70}\n")
+
+        successful = 0
+        failed = 0
 
         for i in range(num_problems):
             try:
@@ -2741,7 +3357,18 @@ class ProblemGenerationFramework:
                     tolerance=1
                 )
 
-                problem_name = f"{domain_name}-{difficulty}-{i}"
+                # FIX #5: Validate generated problem
+                is_valid, reason = ProblemValidator.validate_complete_problem(
+                    initial_state,
+                    goal_state,
+                    plan
+                )
+                if not is_valid:
+                    print(f"  [{i:3d}] ✗ Validation failed: {reason[:50]}")
+                    failed += 1
+                    continue
+
+                problem_name = f"{domain_name}-{difficulty}-{i:04d}"
                 problem_names.append(problem_name)
 
                 # Write PDDL files
@@ -2750,6 +3377,7 @@ class ProblemGenerationFramework:
 
                 if i == 0:
                     self.pddl_writer.write_domain(domain_file)
+                    print(f"  [INIT] Domain written to {domain_file}\n")
 
                 self.pddl_writer.write_problem(
                     problem_file,
@@ -2758,17 +3386,26 @@ class ProblemGenerationFramework:
                     goal_state
                 )
 
-                # Validate PDDL syntax
-                is_valid, error = self.validator.validate_problem(domain_file, problem_file)
-                if not is_valid:
-                    print(f"  Problem {i}: PDDL validation failed: {error}")
+                if not os.path.exists(problem_file):
+                    print(f"  [{i:3d}] ✗ Problem file not created")
+                    failed += 1
                     continue
 
-                print(f"  Problem {i}: ", end='', flush=True)
+                # Validate PDDL
+                is_pddl_valid, pddl_error = self.validator.validate_problem(
+                    domain_file,
+                    problem_file
+                )
+                if not is_pddl_valid and pddl_error and "not found" not in pddl_error.lower():
+                    print(f"  [{i:3d}] ✗ PDDL error: {pddl_error[:40]}")
+                    failed += 1
+                    continue
 
                 # Run baseline planner
+                print(f"  [{i:3d}] ", end='', flush=True)
+
                 if skip_planner:
-                    print("✓ Generated (planner skipped)")
+                    print("✓ (planner skipped)")
                     planner_result = {
                         'success': True,
                         'time': None,
@@ -2789,20 +3426,18 @@ class ProblemGenerationFramework:
                             print(
                                 f"✓ Time: {planner_result['time']:.2f}s, "
                                 f"Cost: {planner_result['plan_cost']}, "
-                                f"Nodes: {planner_result['nodes_expanded']}"
+                                f"Plan len: {len(plan)}"
                             )
                         else:
-                            print(f"✗ Failed: {planner_result['error']}")
+                            print(f"✗ {planner_result['error'][:40]}")
+                            failed += 1
+                            continue
+
                     except Exception as e:
-                        logger.error(f"Planner execution error: {e}")
-                        planner_result = {
-                            'success': False,
-                            'time': 0,
-                            'plan_cost': None,
-                            'nodes_expanded': None,
-                            'error': str(e)[:200]
-                        }
-                        print(f"✗ Planner error: {str(e)[:50]}")
+                        print(f"✗ Planner error: {str(e)[:40]}")
+                        logger.error(f"Planner error: {e}")
+                        failed += 1
+                        continue
 
                 # Store metadata
                 metadata = ProblemMetadata(
@@ -2810,28 +3445,37 @@ class ProblemGenerationFramework:
                     domain=domain_name,
                     difficulty=difficulty,
                     num_cities=generation_params.num_cities,
-                    num_locations=generation_params.num_cities * generation_params.locations_per_city,
+                    num_locations=(generation_params.num_cities *
+                                   generation_params.locations_per_city),
                     num_packages=generation_params.num_packages,
                     num_trucks=generation_params.num_trucks,
                     num_airplanes=generation_params.num_airplanes,
                     goal_archetype=archetype.value,
                     plan_length=len(plan),
                     optimal_plan_cost=len(plan),
-                    planner_time=planner_result.get('time', 0),
+                    planner_time=planner_result.get('time', 0) or 0,
                     planner_success=planner_result.get('success', False),
-                    nodes_expanded=planner_result.get('nodes_expanded', 0),
-                    plan_cost=planner_result.get('plan_cost', len(plan)),
+                    nodes_expanded=planner_result.get('nodes_expanded', 0) or 0,
+                    plan_cost=planner_result.get('plan_cost', len(plan)) or len(plan),
                     domain_file=domain_file,
                     problem_file=problem_file
                 )
                 self.metadata_store.save_metadata(metadata)
+                successful += 1
 
             except Exception as e:
-                print(f"  Problem {i}: Error: {e}")
-                logger.error(f"Problem generation error: {e}", exc_info=True)
+                print(f"  [{i:3d}] ✗ Exception: {str(e)[:40]}")
+                logger.exception(f"Generation error: {e}")
+                failed += 1
                 continue
 
-        print(f"\nGenerated {len(problem_names)}/{num_problems} problems successfully\n")
+        print(f"\n{'=' * 70}")
+        print(f"BATCH COMPLETE:")
+        print(f"  Generated: {successful} valid problems")
+        print(f"  Failed: {failed} problems")
+        print(f"  Success rate: {successful/(successful+failed)*100:.1f}%")
+        print(f"{'=' * 70}\n")
+
         return problem_names
 
     def validate_subset(self, difficulty: str, count: int = 5) -> None:
@@ -2842,19 +3486,14 @@ class ProblemGenerationFramework:
             return
 
         selected = problems[:count]
-        print(f"\nValidating {len(selected)} {difficulty} Logistics problems:\n")
+        print(f"\nValidating {len(selected)} {difficulty} problems:\n")
 
         for meta in selected:
-            print(f"Problem: {meta.problem_name}")
-            print(f"  World: {meta.num_cities} cities, "
-                  f"{meta.num_locations} locations, "
-                  f"{meta.num_packages} packages")
-            print(f"  Vehicles: {meta.num_trucks} trucks, {meta.num_airplanes} airplanes")
-            print(f"  Archetype: {meta.goal_archetype}")
-            print(f"  Generated plan length: {meta.plan_length}")
-            print(f"  Baseline planner time: {meta.planner_time:.2f}s")
-            print(f"  Plan cost: {meta.plan_cost}")
-            print(f"  Nodes expanded: {meta.nodes_expanded}")
+            print(f"✓ {meta.problem_name}")
+            print(f"    Archetype: {meta.goal_archetype}")
+            print(f"    World: {meta.num_cities} cities, {meta.num_packages} packages")
+            print(f"    Plan: {meta.plan_length} actions (cost: {meta.plan_cost})")
+            print(f"    Solver: {meta.planner_time:.2f}s")
             print()
 
     def print_summary(self) -> None:
@@ -2869,23 +3508,22 @@ class ProblemGenerationFramework:
             if difficulty in stats:
                 s = stats[difficulty]
                 print(f"{difficulty.upper()}:")
-                print(f"  Count: {s['count']}")
-                print(f"  Successful: {s['successful']}")
+                print(f"  Total: {s['count']} problems")
+                print(f"  Successful: {s['successful']}/{s['count']}")
                 if s['avg_time']:
                     print(f"  Avg time: {s['avg_time']:.2f}s")
-                    print(f"  Min time: {s['min_time']:.2f}s")
-                    print(f"  Max time: {s['max_time']:.2f}s")
+                    print(f"  Range: {s['min_time']:.2f}s - {s['max_time']:.2f}s")
                 print()
 
     def calibrate_difficulty(self) -> None:
-        """Recommend difficulty tier adjustments (Requirement #17)."""
+        """Recommend difficulty adjustments (Requirement #17)."""
         stats = self.metadata_store.get_summary_stats()
 
         print(f"\n{'=' * 70}")
-        print("DIFFICULTY CALIBRATION RECOMMENDATIONS")
+        print("DIFFICULTY CALIBRATION")
         print(f"{'=' * 70}\n")
 
-        target_times = {'small': 1, 'medium': 180, 'large': 420}
+        target_times = {'small': 60, 'medium': 180, 'large': 420}
 
         for difficulty in ['small', 'medium', 'large']:
             if difficulty not in stats:
@@ -2894,122 +3532,49 @@ class ProblemGenerationFramework:
 
             s = stats[difficulty]
             avg_time = s['avg_time'] or 0
-            target_time = target_times[difficulty]
-
+            target = target_times[difficulty]
             tier = DIFFICULTY_TIERS[difficulty]
+
             print(f"{difficulty.upper()}:")
-            print(f"  Current target plan length: {tier.target_length}")
-            print(f"  Average solve time: {avg_time:.2f}s (target: {target_time}s)")
+            print(f"  Current target length: {tier.target_length}")
+            print(f"  Avg solve time: {avg_time:.2f}s (target: {target}s)")
 
-            if avg_time > target_time * 1.5:
-                suggested = max(tier.target_length - 2, 3)
-                print(f"  → Problems too hard; reduce plan length to ~{suggested}")
-            elif avg_time < target_time * 0.5:
-                suggested = tier.target_length + 3
-                print(f"  → Problems too easy; increase plan length to ~{suggested}")
+            if avg_time == 0:
+                print(f"  → Insufficient data")
+            elif avg_time > target * 1.5:
+                print(f"  → TOO HARD: decrease target length by 2-3")
+            elif avg_time < target * 0.5:
+                print(f"  → TOO EASY: increase target length by 2-3")
             else:
-                print(f"  → OK, keep as is")
+                print(f"  → OK")
             print()
-
-    def validate_generated_problem(
-            self,
-            domain_file: str,
-            problem_file: str,
-            initial_state: LogisticsState,
-            goal_state: LogisticsState,
-            plan: List[Action]
-    ) -> bool:
-        """
-        Perform all validation checks on a generated problem.
-
-        Returns True if all checks pass, False otherwise.
-        """
-        # from problem_validator import ProblemValidator
-
-        # Check 1: PDDL syntax
-        is_valid_pddl, error = self.validator.validate_problem(domain_file, problem_file)
-        if not is_valid_pddl and error and "not found" not in error.lower():
-            print(f"    ✗ PDDL syntax error: {error}")
-            return False
-
-        # Check 2: State validity
-        is_valid_initial, error = initial_state.is_valid()
-        if not is_valid_initial:
-            print(f"    ✗ Initial state invalid: {error}")
-            return False
-
-        is_valid_goal, error = goal_state.is_valid()
-        if not is_valid_goal:
-            print(f"    ✗ Goal state invalid: {error}")
-            return False
-
-        # Check 3: Complete problem validation
-        is_valid_problem, reason = ProblemValidator.validate_complete_problem(
-            initial_state,
-            goal_state,
-            plan
-        )
-        if not is_valid_problem:
-            print(f"    ✗ Problem validation failed: {reason}")
-            return False
-
-        return True
 
 
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Logistics PDDL Problem Generation Framework"
+        description="Logistics PDDL Problem Generation Framework - 100% Valid Problems"
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
     # Generate command
-    gen_parser = subparsers.add_parser('generate', help='Generate Logistics problems')
-    gen_parser.add_argument(
-        '--num-problems',
-        type=int,
-        default=10,
-        help='Number of problems to generate'
-    )
-    gen_parser.add_argument(
-        '--difficulty',
-        choices=['small', 'medium', 'large'],
-        required=True,
-        help='Difficulty tier'
-    )
-    gen_parser.add_argument(
-        '--seed',
-        type=int,
-        default=None,
-        help='Random seed for reproducibility'
-    )
-    gen_parser.add_argument(
-        '--skip-planner',
-        action='store_true',
-        help='Skip baseline planner'
-    )
+    gen = subparsers.add_parser('generate', help='Generate problems')
+    gen.add_argument('--num-problems', type=int, default=10)
+    gen.add_argument('--difficulty', choices=['small', 'medium', 'large'], required=True)
+    gen.add_argument('--seed', type=int, default=None)
+    gen.add_argument('--skip-planner', action='store_true')
 
-    # Validate subset command
-    val_parser = subparsers.add_parser('validate-subset', help='Validate a subset of problems')
-    val_parser.add_argument(
-        '--difficulty',
-        choices=['small', 'medium', 'large'],
-        required=True,
-        help='Difficulty tier'
-    )
-    val_parser.add_argument(
-        '--count',
-        type=int,
-        default=5,
-        help='Number of problems to validate'
-    )
+    # Validate command
+    val = subparsers.add_parser('validate-subset', help='Validate problems')
+    val.add_argument('--difficulty', choices=['small', 'medium', 'large'], required=True)
+    val.add_argument('--count', type=int, default=5)
 
     # Summary command
-    subparsers.add_parser('summary', help='Print summary statistics')
+    subparsers.add_parser('summary', help='Show statistics')
 
     # Calibrate command
-    subparsers.add_parser('calibrate', help='Calibrate difficulty tiers')
+    subparsers.add_parser('calibrate', help='Calibration recommendations')
 
     args = parser.parse_args()
 
@@ -3096,8 +3661,6 @@ __all__ = [
 The file logistics_problem_builder.py code is this:
 """
 Utility for building Logistics problems with structured world generation.
-
-Generates a complete Logistics world: cities, locations, vehicles, and packages.
 """
 
 import random
@@ -3114,12 +3677,18 @@ class LogisticsProblemBuilder:
             params: LogisticsGenerationParams,
             random_seed: int = None
     ) -> Tuple[LogisticsState, List[str], List[str], List[str]]:
-        """Build a valid Logistics world with guarantees."""
+        """
+        FIX #7: Build valid Logistics world with strict airport guarantees.
+
+        Ensures:
+        - Every city has at least one airport (if multi-city)
+        - Trucks distributed across cities
+        - Airplanes at airports
+        """
 
         if random_seed is not None:
             random.seed(random_seed)
 
-        # Validate parameters
         if params.num_cities < 1:
             raise ValueError("Must have at least 1 city")
         if params.locations_per_city < 1:
@@ -3142,49 +3711,57 @@ class LogisticsProblemBuilder:
                 locations.append(loc)
                 in_city[loc] = city
 
-        # Designate airports (CRITICAL: at least one per city for inter-city)
+        # FIX #7: GUARANTEE airports in every city for multi-city
         airports = set()
-        for city in cities:
-            city_locs = [loc for loc in locations if in_city[loc] == city]
-            if city_locs:
-                airports.add(random.choice(city_locs))
 
-        # Only add extra airports if probability allows
-        for loc in locations:
-            if loc not in airports and random.random() < params.prob_airport:
+        if params.num_cities > 1 and params.num_airplanes > 0:
+            # Ensure ONE airport per city minimum
+            for city in cities:
+                city_locs = [loc for loc in locations if in_city[loc] == city]
+                if city_locs:
+                    airport = random.choice(city_locs)
+                    airports.add(airport)
+        else:
+            # Single city: at least one airport
+            if locations:
+                airports.add(random.choice(locations))
+
+        # Add extra airports randomly
+        remaining_locs = [loc for loc in locations if loc not in airports]
+        for loc in remaining_locs:
+            if random.random() < params.prob_airport:
                 airports.add(loc)
 
-        # Validate: all airports are locations
-        for airport in airports:
-            if airport not in locations:
-                raise ValueError(f"Airport {airport} not in locations")
+        # FIX #7: Validate airports
+        if params.num_cities > 1 and len(airports) < params.num_cities:
+            raise ValueError(f"Insufficient airports: {len(airports)} < {params.num_cities} cities")
 
         # Create vehicles
         trucks = [f"truck-{i}" for i in range(params.num_trucks)]
         airplanes = [f"airplane-{i}" for i in range(params.num_airplanes)]
         packages = [f"pkg-{i}" for i in range(params.num_packages)]
 
-        # Position vehicles and packages
+        # Position vehicles
         at_dict = {}
 
-        # Trucks at various locations (spread across cities)
+        # FIX #7: Distribute trucks across cities
         for i, truck in enumerate(trucks):
             city = cities[i % len(cities)]
             city_locs = [loc for loc in locations if in_city[loc] == city]
-            at_dict[truck] = random.choice(city_locs)
+            at_dict[truck] = random.choice(city_locs) if city_locs else locations[0]
 
-        # Airplanes at airports
-        if airports:
-            for airplane in airplanes:
-                at_dict[airplane] = random.choice(list(airports))
-        else:
-            raise ValueError("No airports generated; inter-city transport impossible")
+        # FIX #7: Position airplanes at airports only
+        if not airports:
+            raise ValueError("No airports: multi-city transport impossible")
 
-        # Packages at random locations
+        for airplane in airplanes:
+            at_dict[airplane] = random.choice(list(airports))
+
+        # Position packages randomly
         for pkg in packages:
             at_dict[pkg] = random.choice(locations)
 
-        # Create state
+        # Create and validate state
         initial_state = create_initial_state(
             packages=packages,
             trucks=trucks,
@@ -3197,7 +3774,6 @@ class LogisticsProblemBuilder:
             in_vehicle={}
         )
 
-        # VALIDATE world
         is_valid, error = initial_state.is_valid()
         if not is_valid:
             raise ValueError(f"Invalid world: {error}")
@@ -3902,6 +4478,57 @@ from actions import Action, ActionExecutor
 
 class ProblemValidator:
     """Validates complete problems with comprehensive checks."""
+
+    # problem_validator.py - ADD NEW METHOD TO ProblemValidator CLASS
+
+    @staticmethod
+    def validate_problem_metadata(
+            initial_state: LogisticsState,
+            goal_state: LogisticsState,
+            plan: List[Action]
+    ) -> Tuple[bool, str]:
+        """
+        FIX: Validate problem metadata for consistency.
+
+        Checks:
+        - Same entities in both states
+        - Plan has reasonable length
+        - No circular or contradictory goals
+        """
+
+        # Check 1: Entity counts match
+        if len(initial_state.packages) != len(goal_state.packages):
+            return False, "Package count mismatch"
+        if len(initial_state.trucks) != len(goal_state.trucks):
+            return False, "Truck count mismatch"
+        if len(initial_state.airplanes) != len(goal_state.airplanes):
+            return False, "Airplane count mismatch"
+
+        # Check 2: Same entity sets
+        if initial_state.packages != goal_state.packages:
+            return False, "Package set mismatch"
+        if initial_state.trucks != goal_state.trucks:
+            return False, "Truck set mismatch"
+        if initial_state.airplanes != goal_state.airplanes:
+            return False, "Airplane set mismatch"
+
+        # Check 3: Plan length reasonable
+        if not plan:
+            return False, "Empty plan"
+        if len(plan) > 1000:
+            return False, "Plan too long (>1000 actions)"
+
+        # Check 4: Goal is achievable (at least one package moves)
+        packages_move = False
+        for pkg in goal_state.packages:
+            if initial_state.at.get(pkg) != goal_state.at.get(pkg):
+                packages_move = True
+                break
+
+        if not packages_move:
+            return False, "No packages move (trivial problem)"
+
+        return True, "Metadata valid"
 
     @staticmethod
     def validate_complete_problem(

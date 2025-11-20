@@ -31,8 +31,6 @@ import sys
 import os
 import logging
 import json
-import glob
-import subprocess
 import argparse
 import traceback
 from pathlib import Path
@@ -42,7 +40,7 @@ import numpy as np
 
 # Setup paths
 sys.path.insert(0, os.getcwd())
-os.makedirs("benchmarks", exist_ok=True)
+os.makedirs("misc/benchmarks", exist_ok=True)
 os.makedirs("downward/gnn_output", exist_ok=True)
 os.makedirs("downward/fd_output", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
@@ -88,10 +86,10 @@ def generate_benchmark_problems(
     logger.info("=" * 80 + "\n")
 
     try:
-        from pddl_generator.problem_generator import PDDLProblemGenerator
+        from misc.pddl_generator.problem_generator import PDDLProblemGenerator
         from pddl_generator.size_config import SIZE_CONFIGS
 
-        generator = PDDLProblemGenerator(output_dir="benchmarks")
+        generator = PDDLProblemGenerator(output_dir="misc/benchmarks")
 
         benchmarks = {}
 
@@ -186,8 +184,8 @@ def train_on_problems(
         # Train
         logger.info(f"\nTraining for {training_timesteps} timesteps...")
 
-        model_path = f"mvp_output/gnn_model_scale_gen_{reward_variant}.zip"
-        os.makedirs("mvp_output", exist_ok=True)
+        model_path = f"misc/mvp_output/gnn_model_scale_gen_{reward_variant}.zip"
+        os.makedirs("misc/mvp_output", exist_ok=True)
 
         model = train_model(
             model_save_path=model_path,
@@ -244,7 +242,7 @@ def evaluate_scale_generalization(
     logger.info("=" * 80 + "\n")
 
     try:
-        from evaluation_comprehensive import (
+        from misc.evaluation.evaluation_comprehensive import (
             EvaluationFramework,
             GNNPolicyRunner,
             BenchmarkConfig
@@ -602,7 +600,7 @@ def main():
             return 1
     else:
         logger.info("Skipping training")
-        model_path = f"mvp_output/gnn_model_scale_gen_{args.reward_variant}.zip"
+        model_path = f"misc/mvp_output/gnn_model_scale_gen_{args.reward_variant}.zip"
 
     # Phase 2: Evaluate
     results_by_size = evaluate_scale_generalization(

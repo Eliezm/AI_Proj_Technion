@@ -105,7 +105,7 @@ def load_benchmarks_by_difficulty() -> Dict[str, List[Tuple[str, str]]]:
     """Load benchmarks organized by difficulty (small/medium/large)."""
     print_section("PHASE 0: LOAD BENCHMARKS BY DIFFICULTY")
 
-    benchmarks_dir = os.path.abspath("benchmarks")
+    benchmarks_dir = os.path.abspath("misc/benchmarks")
 
     if not os.path.isdir(benchmarks_dir):
         logger.error(f"Benchmarks directory not found: {benchmarks_dir}")
@@ -239,7 +239,7 @@ def run_curriculum_training(
         }
 
         # Try to load existing model
-        model_path = "mvp_output/gnn_model_curriculum_start.zip"
+        model_path = "misc/mvp_output/gnn_model_curriculum_start.zip"
         model = None
 
         if os.path.exists(model_path):
@@ -327,7 +327,7 @@ def run_curriculum_training(
                     pass
 
             # Save checkpoint
-            checkpoint_path = f"mvp_output/gnn_model_curriculum_{difficulty}_{step}.zip"
+            checkpoint_path = f"misc/mvp_output/gnn_model_curriculum_{difficulty}_{step}.zip"
             model.save(checkpoint_path)
             logger.info(f"✓ Checkpoint saved: {checkpoint_path}\n")
 
@@ -338,7 +338,7 @@ def run_curriculum_training(
 
         # Save final model
         if model is not None:
-            final_model_path = "mvp_output/gnn_model_curriculum_final.zip"
+            final_model_path = "misc/mvp_output/gnn_model_curriculum_final.zip"
             model.save(final_model_path)
             logger.info(f"\n✅ Final model saved: {final_model_path}")
             logger.info(f"  Total problems trained: {problems_trained}")

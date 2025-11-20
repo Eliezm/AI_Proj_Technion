@@ -42,7 +42,7 @@ class ProblemGeneralizationConfig:
     OUTPUT_DIR = "problem_generalization_results"
 
     # ✅ REFACTORED: Use new benchmark format
-    BENCHMARK_DIR = "benchmarks"
+    BENCHMARK_DIR = "misc/benchmarks"
     SIZES = ["small"]  # Use small problems
     TRAIN_RATIO = 0.8
 
